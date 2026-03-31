@@ -11,6 +11,19 @@ const EMBED_BATCH: usize = 8;
 const MAX_CHUNK_CHARS: usize = 4_000;
 const MIN_CHUNK_CHARS: usize = 50;
 
+/// Truncate `s` to at most `max_bytes` bytes, snapping back to a char boundary.
+fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    // Walk back from max_bytes until we land on a char boundary.
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 const SKIP_DIRS: &[&str] = &[
     ".git",
     "node_modules",
@@ -295,7 +308,7 @@ fn chunk_markdown(source: &str) -> Vec<MarkdownChunk> {
                 if sub.trim().is_empty() {
                     continue;
                 }
-                let content = &sub[..sub.len().min(MAX_CHUNK_CHARS)];
+                let content = truncate_to_char_boundary(&sub, MAX_CHUNK_CHARS);
                 chunks.push(MarkdownChunk {
                     index: idx,
                     content: content.trim_end().to_string(),
@@ -308,7 +321,7 @@ fn chunk_markdown(source: &str) -> Vec<MarkdownChunk> {
     if chunks.is_empty() {
         chunks.push(MarkdownChunk {
             index: 0,
-            content: source[..source.len().min(MAX_CHUNK_CHARS)].to_string(),
+            content: truncate_to_char_boundary(source, MAX_CHUNK_CHARS).to_string(),
         });
     }
     chunks
