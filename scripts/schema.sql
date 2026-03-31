@@ -180,15 +180,19 @@ CREATE TABLE IF NOT EXISTS sync_state (
 );
 
 -- ── Hybrid search function (BM25 + vector RRF) ────────────────────────────────
+-- Drop old signature if it exists (signature changes require DROP + recreate).
+DROP FUNCTION IF EXISTS hybrid_search(TEXT, VECTOR, INTEGER);
 
 CREATE OR REPLACE FUNCTION hybrid_search(
     query_text  TEXT,
     query_vec   VECTOR,
-    match_count INTEGER
+    match_count INTEGER,
+    rrf_k       INTEGER DEFAULT 60
 )
 RETURNS TABLE (
-    id        BIGINT,
-    file_path TEXT,
+    id         BIGINT,
+    repo_path  TEXT,
+    file_path  TEXT,
     start_line INTEGER,
     end_line   INTEGER,
     content    TEXT,
@@ -216,12 +220,12 @@ AS $$
     ),
     fused AS (
         SELECT COALESCE(b.id, v.id) AS id,
-               COALESCE(1.0 / (60 + b.rank), 0.0)
-             + COALESCE(1.0 / (60 + v.rank), 0.0) AS rrf_score
+               COALESCE(1.0 / (rrf_k + b.rank), 0.0)
+             + COALESCE(1.0 / (rrf_k + v.rank), 0.0) AS rrf_score
         FROM bm25_with_rank b
         FULL OUTER JOIN vec_ranked v USING (id)
     )
-    SELECT c.id, c.file_path, c.start_line, c.end_line, c.content, c.language,
+    SELECT c.id, c.repo_path, c.file_path, c.start_line, c.end_line, c.content, c.language,
            f.rrf_score
     FROM fused f
     JOIN code_chunks c USING (id)

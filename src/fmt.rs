@@ -13,7 +13,8 @@ pub fn fmt_chunks(rows: &[ChunkRow], scores: Option<&[f32]>, score_label: &str) 
             .or_else(|| r.rrf_score.map(|s| s as f32));
 
         let mut header = format!(
-            "### {}:{}-{}",
+            "### {}:{}:{}-{}",
+            r.repo_path,
             r.file_path,
             r.start_line.unwrap_or(0),
             r.end_line.unwrap_or(0)

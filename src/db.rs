@@ -5,6 +5,7 @@ use sqlx::{PgPool, Row as _};
 
 #[derive(Clone)]
 pub struct ChunkRow {
+    pub repo_path: String,
     pub file_path: String,
     pub start_line: Option<i32>,
     pub end_line: Option<i32>,
@@ -51,7 +52,7 @@ pub async fn hybrid_search(
     };
 
     let rows = sqlx::query(
-        "SELECT h.file_path, h.start_line, h.end_line, h.content, h.language,
+        "SELECT h.repo_path, h.file_path, h.start_line, h.end_line, h.content, h.language,
                 c.symbol_kind, h.rrf_score
          FROM hybrid_search($1, $2::vector, $3) h
          JOIN code_chunks c USING (id)
@@ -72,6 +73,7 @@ pub async fn hybrid_search(
     Ok(rows
         .iter()
         .map(|r| ChunkRow {
+            repo_path: r.get("repo_path"),
             file_path: r.get("file_path"),
             start_line: r.get("start_line"),
             end_line: r.get("end_line"),
@@ -114,7 +116,7 @@ pub async fn bm25_search(
     // combined with conditional predicates like `($n IS NULL OR col = $n)` even
     // when the parameter is NULL.  Only append language/symbol_kind clauses when
     // the caller actually supplies a value.
-    let mut sql = "SELECT file_path, start_line, end_line, content, language, symbol_kind,
+    let mut sql = "SELECT repo_path, file_path, start_line, end_line, content, language, symbol_kind,
                           paradedb.score(id)::float8 AS rrf_score
                    FROM   code_chunks
                    WHERE  id @@@ paradedb.match('content', $1)"
@@ -141,6 +143,7 @@ pub async fn bm25_search(
     Ok(rows
         .iter()
         .map(|r| ChunkRow {
+            repo_path: r.get("repo_path"),
             file_path: r.get("file_path"),
             start_line: r.get("start_line"),
             end_line: r.get("end_line"),
@@ -182,7 +185,7 @@ pub async fn get_file_chunks(
     file_path: &str,
 ) -> Result<Vec<ChunkRow>> {
     let rows = sqlx::query(
-        "SELECT file_path, start_line, end_line, content, language, symbol_kind
+        "SELECT repo_path, file_path, start_line, end_line, content, language, symbol_kind
          FROM   code_chunks
          WHERE  repo_path = $1 AND file_path = $2
          ORDER  BY chunk_index",
@@ -195,6 +198,7 @@ pub async fn get_file_chunks(
     Ok(rows
         .iter()
         .map(|r| ChunkRow {
+            repo_path: r.get("repo_path"),
             file_path: r.get("file_path"),
             start_line: r.get("start_line"),
             end_line: r.get("end_line"),
