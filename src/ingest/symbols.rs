@@ -22,6 +22,7 @@ pub fn extract_symbols(source: &str, language: &str) -> Vec<Symbol> {
         "rust" => extract_rust_symbols(bytes, &lines),
         "haskell" => extract_haskell_symbols(bytes, &lines),
         "latex" => extract_latex_symbols(bytes, &lines),
+        "nix" => extract_nix_symbols(bytes, &lines),
         _ => vec![],
     };
 
@@ -622,6 +623,121 @@ fn latex_caption_text(node: &tree_sitter::Node<'_>, source: &[u8]) -> Option<Str
         }
     }
     None
+}
+
+// ── Nix ───────────────────────────────────────────────────────────────────────
+
+/// Extract top-level attribute bindings from a Nix expression.
+///
+/// Nix files are typically one of:
+///   - A function:   `{ pkgs, ... }: { foo = ...; bar = ...; }`
+///   - An attr set:  `{ foo = ...; bar = ...; }`
+///   - A `let` expression followed by either of the above
+///
+/// We walk into function bodies and let-in expressions to find the innermost
+/// attr set, then emit each `binding` as a symbol.
+fn extract_nix_symbols(source: &[u8], lines: &[&str]) -> Vec<Symbol> {
+    let lang: tree_sitter::Language = tree_sitter_nix::LANGUAGE.into();
+    let mut parser = match make_parser(lang) {
+        Some(p) => p,
+        None => return vec![],
+    };
+    let tree = match parser.parse(source, None) {
+        Some(t) => t,
+        None => return vec![],
+    };
+
+    let mut syms = vec![];
+    let root = tree.root_node();
+    // source_expression has a single child
+    if let Some(expr) = root.named_child(0) {
+        collect_nix_bindings(&expr, source, lines, &mut syms, 0);
+    }
+    syms
+}
+
+/// Recurse into functions / let-in / with to reach binding sets, then emit bindings.
+fn collect_nix_bindings(
+    node: &tree_sitter::Node<'_>,
+    source: &[u8],
+    lines: &[&str],
+    syms: &mut Vec<Symbol>,
+    depth: usize,
+) {
+    // Avoid recursing too deep into nested attr sets
+    if depth > 3 {
+        return;
+    }
+    match node.kind() {
+        // `arg: body` or `{ args }: body` — descend into body
+        "function" => {
+            if let Some(body) = node.child_by_field_name("body") {
+                collect_nix_bindings(&body, source, lines, syms, depth);
+            }
+        }
+        // `let bindings in body` — emit let bindings + descend into body
+        "let_expression" => {
+            // emit the let bindings themselves at this depth
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if child.kind() == "binding" {
+                    emit_nix_binding(&child, source, lines, syms);
+                }
+            }
+            if let Some(body) = node.child_by_field_name("body") {
+                collect_nix_bindings(&body, source, lines, syms, depth);
+            }
+        }
+        // `with expr; body`
+        "with_expression" => {
+            if let Some(body) = node.child_by_field_name("body") {
+                collect_nix_bindings(&body, source, lines, syms, depth);
+            }
+        }
+        // `{ ... }` or `rec { ... }` — emit each binding
+        "attrset_expression" | "rec_attrset_expression" => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if child.kind() == "binding" {
+                    emit_nix_binding(&child, source, lines, syms);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn emit_nix_binding(
+    node: &tree_sitter::Node<'_>,
+    source: &[u8],
+    lines: &[&str],
+    syms: &mut Vec<Symbol>,
+) {
+    // The attrpath is the binding's name: `foo`, `foo.bar`, `"foo"`, etc.
+    let name = node
+        .child_by_field_name("attrpath")
+        .and_then(|n| n.utf8_text(source).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
+    if name.is_empty() {
+        return;
+    }
+
+    let start = node.start_position().row;
+    let end = node.end_position().row;
+    let content = lines_slice(lines, start, end);
+    if content.trim().is_empty() {
+        return;
+    }
+
+    syms.push(Symbol {
+        name,
+        kind: "binding".to_string(),
+        content,
+        start_line: start + 1,
+        end_line: end + 1,
+    });
 }
 
 fn group_haskell_decls(decls: &[HsDecl], lines: &[&str]) -> Vec<Symbol> {

@@ -301,7 +301,7 @@ fn detect_language(path: &Path) -> String {
 
 // ── Chunking ──────────────────────────────────────────────────────────────────
 
-const SYMBOL_LANGUAGES: &[&str] = &["typescript", "javascript", "python", "rust", "haskell", "latex"];
+const SYMBOL_LANGUAGES: &[&str] = &["typescript", "javascript", "python", "rust", "haskell", "latex", "nix"];
 
 fn make_chunks(source: &str, language: &str) -> Vec<Chunk> {
     if !SYMBOL_LANGUAGES.contains(&language) {
