@@ -17,18 +17,21 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Index a codebase (incremental: unchanged files are skipped)
+    /// Index a codebase and its markdown docs (incremental: unchanged files are skipped)
     Code {
         /// Path to the repository root
         repo_path: PathBuf,
-        /// Clear existing chunks and re-index everything
+        /// Clear existing chunks and re-index everything (also clears documents unless --no-docs)
         #[arg(long)]
         force: bool,
         /// Extra glob patterns to include (e.g. '**/*.roc')
         #[arg(short, long)]
         pattern: Vec<String>,
+        /// Skip markdown doc indexing for this repo
+        #[arg(long)]
+        no_docs: bool,
     },
-    /// Index markdown documentation (AGENTS.md, README, .agent/**)
+    /// Index markdown documentation only (AGENTS.md, README, .agent/**, and all .md files)
     Docs {
         /// Path to the repository root
         repo_path: PathBuf,
@@ -57,8 +60,11 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
-        Commands::Code { repo_path, force, pattern } => {
+        Commands::Code { repo_path, force, pattern, no_docs } => {
             code::ingest_code(&pool, &repo_path, force, &pattern).await?;
+            if !no_docs {
+                docs::ingest_docs(&pool, &repo_path, force).await?;
+            }
         }
         Commands::Docs { repo_path, force } => {
             docs::ingest_docs(&pool, &repo_path, force).await?;

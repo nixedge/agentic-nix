@@ -223,7 +223,7 @@ fn classify_doc(rel_path: &str) -> Option<&'static str> {
     } else if p.to_lowercase().ends_with("/readme.md") || p.to_lowercase() == "/readme.md" {
         Some("readme")
     } else {
-        None
+        Some("docs")
     }
 }
 

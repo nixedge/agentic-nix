@@ -12,25 +12,26 @@ dev:
 migrate:
     psql postgres://127.0.0.1:5432/codebase -f scripts/schema.sql
 
-# ── Code indexing ─────────────────────────────────────────────────────────────
+# ── Code + doc indexing ───────────────────────────────────────────────────────
 
-# Index a codebase (usage: just index /path/to/repo)
+# Index a codebase and its markdown docs (usage: just index /path/to/repo)
 # Incremental: unchanged files are skipped automatically.
 index path:
     cargo run --release --bin ingest -- code "{{path}}"
 
-# Re-index, clearing existing chunks first
+# Re-index, clearing existing chunks and documents first
 reindex path:
     cargo run --release --bin ingest -- code "{{path}}" --force
 
-# ── Doc indexing ──────────────────────────────────────────────────────────────
+# Index code only, skipping markdown docs
+index-code path:
+    cargo run --release --bin ingest -- code "{{path}}" --no-docs
 
-# Index markdown documentation in a repo (AGENTS.md, README, .agent/** etc.)
-# Incremental: unchanged files are skipped automatically.
+# Index markdown docs only (standalone, does not touch code_chunks)
 index-docs path:
     cargo run --release --bin ingest -- docs "{{path}}"
 
-# Re-index docs, clearing existing records first
+# Re-index docs only
 reindex-docs path:
     cargo run --release --bin ingest -- docs "{{path}}" --force
 
