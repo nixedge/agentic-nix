@@ -167,7 +167,7 @@ pub async fn ingest_docs(pool: &PgPool, repo_path: &Path, force: bool) -> Result
                 continue;
             }
             let preview: String = chunk.content.split_whitespace().collect::<Vec<_>>().join(" ");
-            let preview = &preview[..preview.len().min(280)];
+            let preview = truncate_to_char_boundary(&preview, 280);
             pending.push(DocRecord {
                 repo_path: repo_str.clone(),
                 source_path: rel_path.clone(),
