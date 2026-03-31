@@ -30,6 +30,7 @@
       # ── Ollama (embeddings + optional LLM) ───────────────────────────────
       services.ollama."llm" = {
         enable = true;
+        acceleration = "cuda";
         # jina-code-embeddings-1.5b: code-specific, Qwen2.5-Coder base, 32k ctx.
         # Ollama returns 1536-dim vectors.
         models = ["hf.co/jinaai/jina-code-embeddings-1.5b-GGUF:Q8_0"];
