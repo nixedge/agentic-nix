@@ -71,6 +71,14 @@ pub struct GetFileParams {
     pub file_path: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct FetchPackageParams {
+    #[schemars(description = "Haskell package name (e.g. 'serialise', 'cardano-ledger-core')")]
+    pub package: String,
+    #[schemars(description = "Package version (e.g. '0.2.6.1')")]
+    pub version: String,
+}
+
 // ── Server ────────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -307,6 +315,116 @@ impl CodeSearchServer {
         )]))
     }
 
+    // ── fetch_package ─────────────────────────────────────────────────────────
+
+    #[tool(
+        description = "Fetch a Haskell package from CHaP (Cardano Haskell Package repository) or \
+                       Hackage and index it for code search. Checks CHaP first, falls back to \
+                       Hackage. Returns immediately if the package is already indexed. Use this \
+                       when you need source-level detail about a Haskell library (types, functions, \
+                       instances) that isn't in the current index."
+    )]
+    async fn fetch_package(
+        &self,
+        #[tool(aggr)] params: FetchPackageParams,
+    ) -> Result<CallToolResult, McpError> {
+        let FetchPackageParams { package, version } = params;
+        let pkg_ver = format!("{package}-{version}");
+        let chap_key = format!("chap::{pkg_ver}");
+        let hackage_key = format!("hackage::{pkg_ver}");
+
+        // Check if already indexed.
+        let existing: i64 = match sqlx::query_scalar(
+            "SELECT COUNT(*) FROM code_chunks WHERE repo_path = $1 OR repo_path = $2",
+        )
+        .bind(&chap_key)
+        .bind(&hackage_key)
+        .fetch_one(&self.pool)
+        .await
+        {
+            Ok(n) => n,
+            Err(e) => {
+                return Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Database error: {e}"
+                ))]));
+            }
+        };
+
+        if existing > 0 {
+            let source: String = sqlx::query_scalar(
+                "SELECT repo_path FROM code_chunks WHERE repo_path = $1 OR repo_path = $2 LIMIT 1",
+            )
+            .bind(&chap_key)
+            .bind(&hackage_key)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or_else(|_| pkg_ver.clone());
+
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Already indexed: {pkg_ver} ({existing} chunks, source: {source}).\n\
+                 Use search_code with language=haskell to query it."
+            ))]));
+        }
+
+        // Shell out to the ingest binary.
+        let ingest_bin = find_ingest_bin();
+        let pg_dsn = std::env::var("PG_DSN")
+            .unwrap_or_else(|_| "postgresql://127.0.0.1:5432/codebase".into());
+
+        let output = match tokio::process::Command::new(&ingest_bin)
+            .args(["hackage", &package, &version])
+            .env("PG_DSN", &pg_dsn)
+            .output()
+            .await
+        {
+            Ok(o) => o,
+            Err(e) => {
+                return Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Failed to launch ingest binary ({ingest_bin:?}): {e}"
+                ))]));
+            }
+        };
+
+        let stderr_log = String::from_utf8_lossy(&output.stderr).to_string();
+
+        if !output.status.success() {
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Ingest failed (exit {}):\n{stderr_log}",
+                output.status.code().unwrap_or(-1)
+            ))]));
+        }
+
+        // Query final stats.
+        let (chunks, source) = {
+            let chap_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM code_chunks WHERE repo_path = $1",
+            )
+            .bind(&chap_key)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(0);
+
+            if chap_count > 0 {
+                (chap_count, "chap".to_string())
+            } else {
+                let hackage_count: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM code_chunks WHERE repo_path = $1",
+                )
+                .bind(&hackage_key)
+                .fetch_one(&self.pool)
+                .await
+                .unwrap_or(0);
+                (hackage_count, "hackage".to_string())
+            }
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Indexed {pkg_ver} from {source}: {chunks} chunks.\n\
+             You can now use search_code with language=haskell to query this package.\n\
+             Log:\n{stderr_log}"
+        ))]))
+    }
+
     // ── get_file ──────────────────────────────────────────────────────────────
 
     #[tool(description = "Retrieve all indexed chunks for a specific file in order.")]
@@ -361,10 +479,27 @@ impl ServerHandler for CodeSearchServer {
                  Tools: search_code (code, supports language/symbol_kind filters), \
                  bm25_search (code text-only), search_docs (markdown docs, supports doc_kind filter), \
                  search_github (issues + PRs, supports entity_type/repo/state filters), \
-                 list_repos, get_file."
+                 list_repos, get_file, fetch_package (download and index a Haskell package from \
+                 CHaP or Hackage on demand)."
                     .to_string(),
             ),
             ..Default::default()
         }
     }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Locate the `ingest` binary: prefer the sibling in the same directory as this
+/// process, then fall back to whatever is on PATH.
+fn find_ingest_bin() -> std::path::PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join("ingest");
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+    std::path::PathBuf::from("ingest")
 }

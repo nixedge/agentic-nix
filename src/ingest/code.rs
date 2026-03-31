@@ -39,11 +39,12 @@ pub async fn ingest_code(
     repo_path: &Path,
     force: bool,
     extra_patterns: &[String],
+    repo_path_override: Option<&str>,
 ) -> Result<()> {
-    let repo_str = repo_path
-        .canonicalize()?
-        .to_string_lossy()
-        .into_owned();
+    let repo_str = match repo_path_override {
+        Some(s) => s.to_string(),
+        None => repo_path.canonicalize()?.to_string_lossy().into_owned(),
+    };
 
     // Collect files
     let all_files = collect_files(repo_path, extra_patterns);

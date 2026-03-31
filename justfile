@@ -35,6 +35,17 @@ index-docs path:
 reindex-docs path:
     cargo run --release --bin ingest -- docs "{{path}}" --force
 
+# ── Haskell package indexing ──────────────────────────────────────────────────
+
+# Fetch and index a Haskell package from CHaP or Hackage (usage: just index-hackage serialise 0.2.6.1)
+# Checks CHaP first, falls back to Hackage. Skips if already indexed.
+index-hackage package version:
+    cargo run --release --bin ingest -- hackage "{{package}}" "{{version}}"
+
+# Re-index a Haskell package, clearing existing chunks first
+reindex-hackage package version:
+    cargo run --release --bin ingest -- hackage "{{package}}" "{{version}}" --force
+
 # ── GitHub indexing ───────────────────────────────────────────────────────────
 
 # Index GitHub issues + PRs for a repo (usage: just index-github OWNER/REPO)

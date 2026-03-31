@@ -2,6 +2,7 @@ mod code;
 mod docs;
 mod embed;
 mod github;
+mod hackage;
 mod symbols;
 
 use anyhow::Result;
@@ -50,6 +51,16 @@ enum Commands {
         #[arg(long)]
         stream: Vec<String>,
     },
+    /// Fetch a Haskell package from CHaP or Hackage and index it (checks CHaP first)
+    Hackage {
+        /// Package name (e.g. serialise, cardano-ledger-core)
+        package: String,
+        /// Package version (e.g. 0.2.6.1)
+        version: String,
+        /// Re-index even if already present
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[tokio::main]
@@ -61,7 +72,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Code { repo_path, force, pattern, no_docs } => {
-            code::ingest_code(&pool, &repo_path, force, &pattern).await?;
+            code::ingest_code(&pool, &repo_path, force, &pattern, None).await?;
             if !no_docs {
                 docs::ingest_docs(&pool, &repo_path, force).await?;
             }
@@ -71,6 +82,9 @@ async fn main() -> Result<()> {
         }
         Commands::Github { repo, force, stream } => {
             github::ingest_github(&pool, &repo, force, &stream).await?;
+        }
+        Commands::Hackage { package, version, force } => {
+            hackage::ingest_hackage(&pool, &package, &version, force).await?;
         }
     }
     Ok(())
