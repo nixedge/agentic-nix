@@ -1,0 +1,25 @@
+# Rust
+target/
+Cargo.lock.bak
+
+# Nix
+result
+result-*
+.direnv/
+
+# Data / runtime
+data/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Direnv
+.envrc.local
+
+# Claude
+.claude/settings.local.json
