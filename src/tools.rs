@@ -419,7 +419,11 @@ impl CodeSearchServer {
 
     // ── get_file ──────────────────────────────────────────────────────────────
 
-    #[tool(description = "Retrieve all indexed chunks for a specific file in order.")]
+    #[tool(
+        description = "Retrieve all indexed chunks for a specific file. Writes the reconstructed \
+                       source to /tmp/agentic-nix/ and returns the path — use the Read tool to \
+                       inspect it without flooding context."
+    )]
     async fn get_file(
         &self,
         #[tool(aggr)] params: GetFileParams,
@@ -439,25 +443,46 @@ impl CodeSearchServer {
                 "No chunks found for {repo_path}/{file_path}"
             ))]));
         }
-        let mut parts = vec![format!("### {file_path}")];
+
+        // Reconstruct the file from ordered chunks and write to /tmp.
+        // Chunks may overlap (overlapping-window fallback), so de-duplicate by
+        // collecting all lines into a BTreeMap keyed by 1-indexed line number.
+        let mut line_map: std::collections::BTreeMap<i32, String> = std::collections::BTreeMap::new();
         for r in &rows {
-            let lang = r.language.as_deref().unwrap_or("");
-            let kind_tag = r
-                .symbol_kind
-                .as_deref()
-                .map(|k| format!(" [{k}]"))
-                .unwrap_or_default();
-            parts.push(format!(
-                "Lines {}-{}{}:\n```{lang}\n{}\n```",
-                r.start_line.unwrap_or(0),
-                r.end_line.unwrap_or(0),
-                kind_tag,
-                r.content
-            ));
+            let start = r.start_line.unwrap_or(1).max(1);
+            for (offset, line) in r.content.lines().enumerate() {
+                line_map.entry(start + offset as i32).or_insert_with(|| line.to_string());
+            }
         }
-        Ok(CallToolResult::success(vec![Content::text(
-            parts.join("\n\n"),
-        )]))
+        let source = line_map.values().cloned().collect::<Vec<_>>().join("\n");
+
+        // Build a stable, human-readable path under /tmp/agentic-nix/.
+        // Sanitise repo_path (colons → underscores) so it's a valid directory name.
+        let safe_repo = repo_path.replace("::", "__").replace(':', "_").replace('/', "_");
+        let out_path = std::path::PathBuf::from("/tmp/agentic-nix")
+            .join(&safe_repo)
+            .join(&file_path);
+
+        if let Some(parent) = out_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                return Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Failed to create temp directory: {e}"
+                ))]));
+            }
+        }
+        if let Err(e) = std::fs::write(&out_path, &source) {
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Failed to write temp file: {e}"
+            ))]));
+        }
+
+        let lang = rows.first().and_then(|r| r.language.as_deref()).unwrap_or("text");
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "File written to: {}\n({} lines, language: {lang})\n\
+             Use the Read tool to inspect it.",
+            out_path.display(),
+            line_map.len(),
+        ))]))
     }
 }
 
