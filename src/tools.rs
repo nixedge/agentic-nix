@@ -475,12 +475,25 @@ impl ServerHandler for CodeSearchServer {
         ServerInfo {
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             instructions: Some(
-                "Hybrid BM25+vector code search with optional cross-encoder reranking. \
-                 Tools: search_code (code, supports language/symbol_kind filters), \
-                 bm25_search (code text-only), search_docs (markdown docs, supports doc_kind filter), \
-                 search_github (issues + PRs, supports entity_type/repo/state filters), \
-                 list_repos, get_file, fetch_package (download and index a Haskell package from \
-                 CHaP or Hackage on demand)."
+                "Hybrid BM25+vector code search with optional cross-encoder reranking.\n\
+                 \n\
+                 Tools:\n\
+                 - search_code: hybrid search over indexed code (language, symbol_kind filters)\n\
+                 - bm25_search: BM25-only, best for exact identifiers and symbols\n\
+                 - search_docs: hybrid search over indexed markdown docs (doc_kind filter)\n\
+                 - search_github: hybrid search over indexed GitHub issues + PRs (entity_type, repo, state filters)\n\
+                 - list_repos: list indexed repositories with file and chunk counts\n\
+                 - get_file: retrieve all chunks for a specific file\n\
+                 - fetch_package: download and index a Haskell package from CHaP or Hackage on demand\n\
+                 \n\
+                 IMPORTANT — Haskell packages:\n\
+                 When you need source-level detail about a Haskell library (types, functions, instances, \
+                 module structure), call fetch_package FIRST before attempting to read files from \
+                 /nix/store or searching the filesystem. fetch_package indexes the package into the \
+                 search database so subsequent search_code calls can find it. It is a no-op if the \
+                 package is already indexed. Example: to understand the serialise package, call \
+                 fetch_package({\"package\": \"serialise\", \"version\": \"0.2.6.1\"}) then \
+                 search_code({\"query\": \"...\", \"language\": \"haskell\"})."
                     .to_string(),
             ),
             ..Default::default()
