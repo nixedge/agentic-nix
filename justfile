@@ -66,7 +66,7 @@ index-github-issues repo:
 index-github-prs repo:
     cargo run --release --bin ingest -- github "{{repo}}" --stream prs
 
-# ── MCP server ────────────────────────────────────────────────────────────────
+# ── MCP server + CLI ──────────────────────────────────────────────────────────
 
 # Build both binaries
 build:
@@ -75,6 +75,18 @@ build:
 # Start the MCP server (Claude Code launches this automatically)
 mcp:
     cargo run --release --bin mcp-server
+
+# List all indexed repositories
+list-repos:
+    cargo run --release --bin mcp-server -- repos
+
+# Hybrid search over indexed code (usage: just search "query")
+search query:
+    cargo run --release --bin mcp-server -- search "{{query}}"
+
+# BM25-only search (usage: just bm25 "MyFunctionName")
+bm25 query:
+    cargo run --release --bin mcp-server -- bm25 "{{query}}"
 
 # ── Database ──────────────────────────────────────────────────────────────────
 
