@@ -73,10 +73,19 @@ pub struct GetFileParams {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct FetchPackageParams {
-    #[schemars(description = "Haskell package name (e.g. 'serialise', 'cardano-ledger-core')")]
+    #[schemars(description = "Package or crate name (e.g. 'serialise', 'tokio')")]
     pub package: String,
-    #[schemars(description = "Package version (e.g. '0.2.6.1')")]
+    #[schemars(description = "Package version (e.g. '0.2.6.1', '1.0.0')")]
     pub version: String,
+    #[schemars(
+        description = "Package ecosystem: 'haskell' (CHaP/Hackage, default) or 'rust' (crates.io)"
+    )]
+    #[serde(default = "default_ecosystem")]
+    pub ecosystem: String,
+}
+
+fn default_ecosystem() -> String {
+    "haskell".to_string()
 }
 
 // ── Server ────────────────────────────────────────────────────────────────────
@@ -318,51 +327,58 @@ impl CodeSearchServer {
     // ── fetch_package ─────────────────────────────────────────────────────────
 
     #[tool(
-        description = "Fetch a Haskell package from CHaP (Cardano Haskell Package repository) or \
-                       Hackage and index it for code search. Checks CHaP first, falls back to \
-                       Hackage. Returns immediately if the package is already indexed. Use this \
-                       when you need source-level detail about a Haskell library (types, functions, \
-                       instances) that isn't in the current index."
+        description = "Fetch a package from crates.io (Rust) or CHaP/Hackage (Haskell) and index \
+                       it for code search. Returns immediately if already indexed. Use this when \
+                       you need source-level detail about a library that isn't in the current index. \
+                       Set ecosystem='rust' for Rust crates, ecosystem='haskell' (default) for \
+                       Haskell packages (checks CHaP first, falls back to Hackage)."
     )]
     async fn fetch_package(
         &self,
         #[tool(aggr)] params: FetchPackageParams,
     ) -> Result<CallToolResult, McpError> {
-        let FetchPackageParams { package, version } = params;
+        let FetchPackageParams { package, version, ecosystem } = params;
         let pkg_ver = format!("{package}-{version}");
-        let chap_key = format!("chap::{pkg_ver}");
-        let hackage_key = format!("hackage::{pkg_ver}");
+
+        let (subcommand, repo_path_keys): (&str, Vec<String>) = match ecosystem.as_str() {
+            "rust" => (
+                "crate",
+                vec![format!("crates.io::{pkg_ver}")],
+            ),
+            _ => (
+                "hackage",
+                vec![
+                    format!("chap::{pkg_ver}"),
+                    format!("hackage::{pkg_ver}"),
+                ],
+            ),
+        };
 
         // Check if already indexed.
-        let existing: i64 = match sqlx::query_scalar(
-            "SELECT COUNT(*) FROM code_chunks WHERE repo_path = $1 OR repo_path = $2",
-        )
-        .bind(&chap_key)
-        .bind(&hackage_key)
-        .fetch_one(&self.pool)
-        .await
-        {
-            Ok(n) => n,
-            Err(e) => {
-                return Ok(CallToolResult::success(vec![Content::text(format!(
-                    "Database error: {e}"
-                ))]));
+        let existing: i64 = {
+            let mut q = "SELECT COUNT(*) FROM code_chunks WHERE ".to_string();
+            let placeholders: Vec<String> =
+                (1..=repo_path_keys.len()).map(|i| format!("repo_path = ${i}")).collect();
+            q.push_str(&placeholders.join(" OR "));
+            let mut query = sqlx::query_scalar(&q);
+            for key in &repo_path_keys {
+                query = query.bind(key);
+            }
+            match query.fetch_one(&self.pool).await {
+                Ok(n) => n,
+                Err(e) => {
+                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Database error: {e}"
+                    ))]));
+                }
             }
         };
 
         if existing > 0 {
-            let source: String = sqlx::query_scalar(
-                "SELECT repo_path FROM code_chunks WHERE repo_path = $1 OR repo_path = $2 LIMIT 1",
-            )
-            .bind(&chap_key)
-            .bind(&hackage_key)
-            .fetch_one(&self.pool)
-            .await
-            .unwrap_or_else(|_| pkg_ver.clone());
-
+            let language = if ecosystem == "rust" { "rust" } else { "haskell" };
             return Ok(CallToolResult::success(vec![Content::text(format!(
-                "Already indexed: {pkg_ver} ({existing} chunks, source: {source}).\n\
-                 Use search_code with language=haskell to query it."
+                "Already indexed: {pkg_ver} ({existing} chunks).\n\
+                 Use search_code with language={language} to query it."
             ))]));
         }
 
@@ -372,7 +388,7 @@ impl CodeSearchServer {
             .unwrap_or_else(|_| "postgresql://127.0.0.1:5432/codebase".into());
 
         let output = match tokio::process::Command::new(&ingest_bin)
-            .args(["hackage", &package, &version])
+            .args([subcommand, &package, &version])
             .env("PG_DSN", &pg_dsn)
             .output()
             .await
@@ -394,33 +410,23 @@ impl CodeSearchServer {
             ))]));
         }
 
-        // Query final stats.
-        let (chunks, source) = {
-            let chap_count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM code_chunks WHERE repo_path = $1",
-            )
-            .bind(&chap_key)
-            .fetch_one(&self.pool)
-            .await
-            .unwrap_or(0);
-
-            if chap_count > 0 {
-                (chap_count, "chap".to_string())
-            } else {
-                let hackage_count: i64 = sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM code_chunks WHERE repo_path = $1",
-                )
-                .bind(&hackage_key)
-                .fetch_one(&self.pool)
-                .await
-                .unwrap_or(0);
-                (hackage_count, "hackage".to_string())
+        // Query final chunk count.
+        let chunks: i64 = {
+            let mut q = "SELECT COUNT(*) FROM code_chunks WHERE ".to_string();
+            let placeholders: Vec<String> =
+                (1..=repo_path_keys.len()).map(|i| format!("repo_path = ${i}")).collect();
+            q.push_str(&placeholders.join(" OR "));
+            let mut query = sqlx::query_scalar(&q);
+            for key in &repo_path_keys {
+                query = query.bind(key);
             }
+            query.fetch_one(&self.pool).await.unwrap_or(0)
         };
 
+        let language = if ecosystem == "rust" { "rust" } else { "haskell" };
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Indexed {pkg_ver} from {source}: {chunks} chunks.\n\
-             You can now use search_code with language=haskell to query this package.\n\
+            "Indexed {pkg_ver} from {ecosystem}: {chunks} chunks.\n\
+             Use search_code with language={language} to query it.\n\
              Log:\n{stderr_log}"
         ))]))
     }
@@ -486,14 +492,15 @@ impl ServerHandler for CodeSearchServer {
                  - get_file: retrieve all chunks for a specific file\n\
                  - fetch_package: download and index a Haskell package from CHaP or Hackage on demand\n\
                  \n\
-                 IMPORTANT — Haskell packages:\n\
-                 When you need source-level detail about a Haskell library (types, functions, instances, \
-                 module structure), call fetch_package FIRST before attempting to read files from \
-                 /nix/store or searching the filesystem. fetch_package indexes the package into the \
-                 search database so subsequent search_code calls can find it. It is a no-op if the \
-                 package is already indexed. Example: to understand the serialise package, call \
-                 fetch_package({\"package\": \"serialise\", \"version\": \"0.2.6.1\"}) then \
-                 search_code({\"query\": \"...\", \"language\": \"haskell\"})."
+                 IMPORTANT — external packages:\n\
+                 When you need source-level detail about a Haskell or Rust library (types, functions, \
+                 instances, module structure), call fetch_package FIRST before attempting to read \
+                 files from /nix/store or searching the filesystem. fetch_package downloads and \
+                 indexes the package so subsequent search_code calls can find it. It is a no-op if \
+                 already indexed.\n\
+                 - Haskell: fetch_package({\"package\": \"serialise\", \"version\": \"0.2.6.1\", \"ecosystem\": \"haskell\"})\n\
+                 - Rust: fetch_package({\"package\": \"tokio\", \"version\": \"1.0.0\", \"ecosystem\": \"rust\"})\n\
+                 Then use search_code with language=haskell or language=rust to query the indexed source."
                     .to_string(),
             ),
             ..Default::default()

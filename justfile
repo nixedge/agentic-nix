@@ -46,6 +46,17 @@ index-hackage package version:
 reindex-hackage package version:
     cargo run --release --bin ingest -- hackage "{{package}}" "{{version}}" --force
 
+# ── Rust crate indexing ───────────────────────────────────────────────────────
+
+# Fetch and index a Rust crate from crates.io (usage: just index-crate tokio 1.0.0)
+# Skips if already indexed.
+index-crate package version:
+    cargo run --release --bin ingest -- crate "{{package}}" "{{version}}"
+
+# Re-index a Rust crate, clearing existing chunks first
+reindex-crate package version:
+    cargo run --release --bin ingest -- crate "{{package}}" "{{version}}" --force
+
 # ── GitHub indexing ───────────────────────────────────────────────────────────
 
 # Index GitHub issues + PRs for a repo (usage: just index-github OWNER/REPO)

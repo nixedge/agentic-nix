@@ -1,4 +1,5 @@
 mod code;
+mod crates;
 mod docs;
 mod embed;
 mod github;
@@ -61,6 +62,16 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
+    /// Fetch a Rust crate from crates.io and index it
+    Crate {
+        /// Crate name (e.g. serde, tokio)
+        package: String,
+        /// Crate version (e.g. 1.0.0)
+        version: String,
+        /// Re-index even if already present
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[tokio::main]
@@ -85,6 +96,9 @@ async fn main() -> Result<()> {
         }
         Commands::Hackage { package, version, force } => {
             hackage::ingest_hackage(&pool, &package, &version, force).await?;
+        }
+        Commands::Crate { package, version, force } => {
+            crates::ingest_crate(&pool, &package, &version, force).await?;
         }
     }
     Ok(())
