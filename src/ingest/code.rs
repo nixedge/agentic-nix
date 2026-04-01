@@ -16,7 +16,7 @@ const MAX_CHUNKS_PER_FILE: usize = 128;
 
 const CODE_EXTENSIONS: &[&str] = &[
     "hs", "rs", "py", "ts", "tsx", "js", "jsx", "nix", "go", "java", "scala", "ml", "mli", "c",
-    "cpp", "h", "hpp", "sql", "sh", "toml", "yaml", "yml", "json", "tex",
+    "cpp", "h", "hpp", "sql", "sh", "toml", "yaml", "yml", "json", "tex", "cabal",
 ];
 
 const SKIP_DIRS: &[&str] = &[
@@ -254,7 +254,13 @@ fn collect_files(repo_path: &Path, extra_patterns: &[String]) -> Vec<std::path::
             .unwrap_or("")
             .to_lowercase();
 
+        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let is_cabal_project = filename == "cabal.project"
+            || filename == "cabal.project.freeze"
+            || filename == "cabal.project.local";
+
         let matches = CODE_EXTENSIONS.contains(&ext.as_str())
+            || is_cabal_project
             || extra_patterns.iter().any(|p| {
                 glob::Pattern::new(p)
                     .map(|pat| pat.matches_path(&path))
@@ -271,6 +277,14 @@ fn collect_files(repo_path: &Path, extra_patterns: &[String]) -> Vec<std::path::
 // ── Language detection ────────────────────────────────────────────────────────
 
 fn detect_language(path: &Path) -> String {
+    let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if filename == "cabal.project"
+        || filename == "cabal.project.freeze"
+        || filename == "cabal.project.local"
+    {
+        return "cabal".to_string();
+    }
+
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -295,6 +309,7 @@ fn detect_language(path: &Path) -> String {
         "toml" => "toml",
         "yaml" | "yml" => "yaml",
         "json" => "json",
+        "cabal" => "cabal",
         _ => "text",
     }
     .to_string()
