@@ -41,6 +41,91 @@ That's it. PostgreSQL, Ollama, Rust, and all other tools are managed by Nix.
 experimental-features = nix-command flakes
 ```
 
+> **On Ubuntu or other non-NixOS systems?** `nix run .#dev` won't use your GPU — CUDA library
+> paths don't resolve correctly for Nix-packaged Ollama outside NixOS. See
+> [Non-NixOS / Ubuntu setup](#non-nixos--ubuntu-setup) below for the system-services alternative.
+
+---
+
+## Non-NixOS / Ubuntu setup
+
+On Ubuntu, use system-managed PostgreSQL and Ollama. The Nix dev shell still provides the Rust
+toolchain, `just`, and all build tools — only the services differ.
+
+### 1. Install PostgreSQL 17 with ParadeDB and pgvector
+
+Add the PostgreSQL apt repo if you haven't already:
+
+```bash
+sudo apt install -y postgresql-common
+sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh
+```
+
+Install [pg_search](https://docs.paradedb.com/documentation/getting-started/self-hosted) (ParadeDB BM25) and pgvector:
+
+```bash
+# ParadeDB repo
+curl -fsSL https://apt.fury.io/paradedb/gpg.key \
+  | sudo gpg --dearmor -o /usr/share/keyrings/paradedb.gpg
+echo "deb [signed-by=/usr/share/keyrings/paradedb.gpg] https://apt.fury.io/paradedb/ stable main" \
+  | sudo tee /etc/apt/sources.list.d/paradedb.list
+
+sudo apt update
+sudo apt install -y postgresql-17-pg-search postgresql-17-pgvector
+```
+
+Enable `pg_search` in PostgreSQL — add to `/etc/postgresql/17/main/postgresql.conf`:
+
+```
+shared_preload_libraries = 'pg_search'
+pg_search.enable_telemetry = off
+```
+
+Restart PostgreSQL:
+
+```bash
+sudo systemctl restart postgresql
+```
+
+Create the database and apply the schema:
+
+```bash
+sudo -u postgres createdb codebase
+sudo -u postgres psql codebase -c \
+  "CREATE EXTENSION IF NOT EXISTS pg_search; CREATE EXTENSION IF NOT EXISTS vector;"
+
+# Allow your user to connect (adjust if you use password auth instead)
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE codebase TO $USER;"
+sudo -u postgres psql codebase -c "GRANT ALL ON SCHEMA public TO $USER;"
+
+# Enter the Nix dev shell, then apply the schema
+nix develop
+just migrate
+```
+
+### 2. Install Ollama
+
+The official installer detects CUDA automatically:
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+```
+
+Pull the embedding model:
+
+```bash
+ollama pull hf.co/jinaai/jina-code-embeddings-1.5b-GGUF:Q8_0
+```
+
+Ollama runs as a systemd service and starts on boot. Verify GPU usage with `ollama ps` after
+pulling a model — it should show `GPU` in the processor column.
+
+### 3. Continue with the normal setup
+
+Skip the `nix run .#dev` step — your services are already running. Jump straight to
+[Build the Rust binaries](#2-build-the-rust-binaries) and continue from there. Everything
+else (indexing, MCP registration, Claude integration) is identical.
+
 ---
 
 ## First-time setup
@@ -343,3 +428,8 @@ The embedding model loads lazily on the first request. Subsequent queries are fa
 **GitHub rate limit hit**
 Set `GITHUB_TOKEN` with a personal access token. The unauth limit is 60 requests/hour;
 authenticated is 5000/hour.
+
+**Ollama uses CPU instead of GPU on Ubuntu**
+Nix-packaged Ollama can't resolve CUDA libraries outside NixOS. Use the system Ollama installer
+instead — see [Non-NixOS / Ubuntu setup](#non-nixos--ubuntu-setup). Confirm GPU is active with
+`ollama ps` while a model is loaded.
