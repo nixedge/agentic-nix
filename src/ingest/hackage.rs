@@ -5,7 +5,7 @@ use std::io::Cursor;
 use tar::Archive;
 use tempfile::TempDir;
 
-use crate::code::ingest_code;
+use super::code::ingest_code;
 
 const CHAP_BASE: &str = "https://chap.intersectmbo.org/package";
 const HACKAGE_BASE: &str = "https://hackage.haskell.org/package";

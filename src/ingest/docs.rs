@@ -5,7 +5,7 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::embed::{embed_batch, vec_literal};
+use super::embed::{embed_batch, vec_literal};
 
 const EMBED_BATCH: usize = 8;
 const MAX_CHUNK_CHARS: usize = 4_000;

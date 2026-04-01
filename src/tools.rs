@@ -8,6 +8,8 @@ use rmcp::{
 use serde::Deserialize;
 use sqlx::PgPool;
 
+use mcp_server::ingest::{crates::ingest_crate, hackage::ingest_hackage};
+
 use crate::{db, embed, fmt, rerank};
 
 const RERANK_POOL_SIZE: i32 = 20;
@@ -382,31 +384,16 @@ impl CodeSearchServer {
             ))]));
         }
 
-        // Shell out to the ingest binary.
-        let ingest_bin = find_ingest_bin();
-        let pg_dsn = std::env::var("PG_DSN")
-            .unwrap_or_else(|_| "postgresql://127.0.0.1:5432/codebase".into());
-
-        let output = match tokio::process::Command::new(&ingest_bin)
-            .args([subcommand, &package, &version])
-            .env("PG_DSN", &pg_dsn)
-            .output()
-            .await
-        {
-            Ok(o) => o,
-            Err(e) => {
-                return Ok(CallToolResult::success(vec![Content::text(format!(
-                    "Failed to launch ingest binary ({ingest_bin:?}): {e}"
-                ))]));
-            }
+        // Call the ingest functions directly (no subprocess).
+        let result = match subcommand {
+            "hackage" => ingest_hackage(&self.pool, &package, &version, false).await,
+            "crate"   => ingest_crate(&self.pool, &package, &version, false).await,
+            _         => Err(anyhow::anyhow!("unknown ecosystem: {ecosystem}")),
         };
 
-        let stderr_log = String::from_utf8_lossy(&output.stderr).to_string();
-
-        if !output.status.success() {
+        if let Err(e) = result {
             return Ok(CallToolResult::success(vec![Content::text(format!(
-                "Ingest failed (exit {}):\n{stderr_log}",
-                output.status.code().unwrap_or(-1)
+                "Ingest failed: {e}"
             ))]));
         }
 
@@ -426,8 +413,7 @@ impl CodeSearchServer {
         let language = if ecosystem == "rust" { "rust" } else { "haskell" };
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Indexed {pkg_ver} from {ecosystem}: {chunks} chunks.\n\
-             Use search_code with language={language} to query it.\n\
-             Log:\n{stderr_log}"
+             Use search_code with language={language} to query it."
         ))]))
     }
 
@@ -508,18 +494,3 @@ impl ServerHandler for CodeSearchServer {
     }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/// Locate the `ingest` binary: prefer the sibling in the same directory as this
-/// process, then fall back to whatever is on PATH.
-fn find_ingest_bin() -> std::path::PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join("ingest");
-            if candidate.exists() {
-                return candidate;
-            }
-        }
-    }
-    std::path::PathBuf::from("ingest")
-}

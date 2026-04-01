@@ -5,8 +5,8 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::embed::{embed_batch, vec_literal};
-use crate::symbols::extract_symbols;
+use super::embed::{embed_batch, vec_literal};
+use super::symbols::extract_symbols;
 
 const EMBED_BATCH: usize = 16;
 const CHUNK_LINES: usize = 120;

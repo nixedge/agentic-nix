@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 
-use crate::embed::{embed_batch, vec_literal};
+use super::embed::{embed_batch, vec_literal};
 
 const GITHUB_API: &str = "https://api.github.com";
 const PAGE_SIZE: usize = 100;

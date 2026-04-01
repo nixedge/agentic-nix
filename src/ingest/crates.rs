@@ -5,7 +5,7 @@ use std::io::Cursor;
 use tar::Archive;
 use tempfile::TempDir;
 
-use crate::code::ingest_code;
+use super::code::ingest_code;
 
 const CRATES_IO_BASE: &str = "https://static.crates.io/crates";
 
