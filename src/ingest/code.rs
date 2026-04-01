@@ -12,7 +12,7 @@ const EMBED_BATCH: usize = 16;
 const CHUNK_LINES: usize = 120;
 const OVERLAP_LINES: usize = 15;
 const MAX_CHUNK_BYTES: usize = 8_000;
-const MAX_CHUNKS_PER_FILE: usize = 128;
+const MAX_CHUNKS_PER_FILE: usize = 256;
 
 const CODE_EXTENSIONS: &[&str] = &[
     "hs", "rs", "py", "ts", "tsx", "js", "jsx", "nix", "go", "java", "scala", "ml", "mli", "c",

@@ -444,17 +444,27 @@ fn collect_hs_decls(root: &tree_sitter::Node<'_>, source: &[u8]) -> Vec<HsDecl> 
     let container = root.child_by_field_name("declarations");
     let iter_node = container.as_ref().unwrap_or(root);
 
-    let mut cursor = iter_node.walk();
-    for child in iter_node.named_children(&mut cursor) {
-        let name = hs_node_name(&child, source);
-        decls.push(HsDecl {
-            kind: child.kind().to_string(),
-            name,
-            start_row: child.start_position().row,
-            end_row: child.end_position().row,
-        });
-    }
+    collect_hs_decls_from(iter_node, source, &mut decls);
     decls
+}
+
+fn collect_hs_decls_from(node: &tree_sitter::Node<'_>, source: &[u8], decls: &mut Vec<HsDecl>) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "cpp" {
+            // CPP conditional blocks (#if/#else/#endif) wrap declarations as children;
+            // recurse so instances/functions inside them are not silently dropped.
+            collect_hs_decls_from(&child, source, decls);
+        } else {
+            let name = hs_node_name(&child, source);
+            decls.push(HsDecl {
+                kind: child.kind().to_string(),
+                name,
+                start_row: child.start_position().row,
+                end_row: child.end_position().row,
+            });
+        }
+    }
 }
 
 /// Extract name from a Haskell declaration node.
