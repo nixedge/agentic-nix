@@ -116,11 +116,12 @@ pub async fn bm25_search(
     // combined with conditional predicates like `($n IS NULL OR col = $n)` even
     // when the parameter is NULL.  Only append language/symbol_kind clauses when
     // the caller actually supplies a value.
-    let mut sql = "SELECT repo_path, file_path, start_line, end_line, content, language, symbol_kind,
+    let mut sql =
+        "SELECT repo_path, file_path, start_line, end_line, content, language, symbol_kind,
                           paradedb.score(id)::float8 AS rrf_score
                    FROM   code_chunks
                    WHERE  id @@@ paradedb.match('content', $1)"
-        .to_string();
+            .to_string();
 
     let mut next_param = 3usize; // $1 = query, $2 = limit
     if language.is_some() {
@@ -135,8 +136,16 @@ pub async fn bm25_search(
     sql.push_str(" ORDER BY paradedb.score(id) DESC LIMIT $2");
 
     let q = sqlx::query(&sql).bind(query).bind(limit);
-    let q = if let Some(lang) = language { q.bind(lang) } else { q };
-    let q = if let Some(kind) = symbol_kind { q.bind(kind) } else { q };
+    let q = if let Some(lang) = language {
+        q.bind(lang)
+    } else {
+        q
+    };
+    let q = if let Some(kind) = symbol_kind {
+        q.bind(kind)
+    } else {
+        q
+    };
 
     let rows = q.fetch_all(pool).await?;
 
@@ -174,7 +183,9 @@ pub async fn list_repos(pool: &PgPool) -> Result<Vec<RepoSummary>> {
             repo_path: r.get("repo_path"),
             chunks: r.get("chunks"),
             files: r.get("files"),
-            last_indexed: r.get::<Option<String>, _>("last_indexed").unwrap_or_default(),
+            last_indexed: r
+                .get::<Option<String>, _>("last_indexed")
+                .unwrap_or_default(),
         })
         .collect())
 }
@@ -445,7 +456,11 @@ pub async fn search_github_hybrid(
     }
 
     // Merge issues + PR results by RRF score
-    all.sort_by(|a, b| b.rrf_score.partial_cmp(&a.rrf_score).unwrap_or(std::cmp::Ordering::Equal));
+    all.sort_by(|a, b| {
+        b.rrf_score
+            .partial_cmp(&a.rrf_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     all.truncate(limit as usize);
     Ok(all)
 }

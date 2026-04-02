@@ -60,7 +60,13 @@ pub async fn ingest_github(
         match ingest_issue_comments(pool, &http, &token, repo, force).await {
             Ok(n) => eprintln!("  ✓ {} upserted", n),
             Err(e) => {
-                record_error(pool, "github", &format!("{repo}:issue_comments"), &e.to_string()).await;
+                record_error(
+                    pool,
+                    "github",
+                    &format!("{repo}:issue_comments"),
+                    &e.to_string(),
+                )
+                .await;
                 eprintln!("  ✗ issue comments failed: {e}");
             }
         }
@@ -71,7 +77,13 @@ pub async fn ingest_github(
         match ingest_pr_comments(pool, &http, &token, repo, force).await {
             Ok(n) => eprintln!("  ✓ {} upserted", n),
             Err(e) => {
-                record_error(pool, "github", &format!("{repo}:pr_comments"), &e.to_string()).await;
+                record_error(
+                    pool,
+                    "github",
+                    &format!("{repo}:pr_comments"),
+                    &e.to_string(),
+                )
+                .await;
                 eprintln!("  ✗ PR review comments failed: {e}");
             }
         }
@@ -83,10 +95,16 @@ pub async fn ingest_github(
 // ── GitHub API client helpers ─────────────────────────────────────────────────
 
 fn gh_headers(token: &str) -> reqwest::header::HeaderMap {
-    use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION};
+    use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue};
     let mut headers = HeaderMap::new();
-    headers.insert(ACCEPT, HeaderValue::from_static("application/vnd.github+json"));
-    headers.insert("X-GitHub-Api-Version", HeaderValue::from_static("2022-11-28"));
+    headers.insert(
+        ACCEPT,
+        HeaderValue::from_static("application/vnd.github+json"),
+    );
+    headers.insert(
+        "X-GitHub-Api-Version",
+        HeaderValue::from_static("2022-11-28"),
+    );
     if !token.is_empty() {
         if let Ok(v) = HeaderValue::from_str(&format!("Bearer {token}")) {
             headers.insert(AUTHORIZATION, v);
@@ -264,7 +282,11 @@ async fn ingest_issues(
     force: bool,
 ) -> Result<(usize, usize)> {
     let scope = format!("{repo}:issues");
-    let watermark = if force { None } else { get_watermark(pool, "github", &scope).await };
+    let watermark = if force {
+        None
+    } else {
+        get_watermark(pool, "github", &scope).await
+    };
 
     let mut params = vec![("state", "all"), ("sort", "updated"), ("direction", "asc")];
     let since_owned: String;
@@ -294,11 +316,8 @@ async fn ingest_issues(
         if issue["pull_request"].is_object() {
             continue;
         }
-        new_watermark = latest_ts(
-            new_watermark.as_deref(),
-            issue["updated_at"].as_str(),
-        )
-        .map(str::to_string);
+        new_watermark =
+            latest_ts(new_watermark.as_deref(), issue["updated_at"].as_str()).map(str::to_string);
 
         pending.push(issue);
         if pending.len() >= EMBED_BATCH {
@@ -391,7 +410,11 @@ async fn ingest_prs(
     force: bool,
 ) -> Result<(usize, usize)> {
     let scope = format!("{repo}:prs");
-    let watermark = if force { None } else { get_watermark(pool, "github", &scope).await };
+    let watermark = if force {
+        None
+    } else {
+        get_watermark(pool, "github", &scope).await
+    };
 
     let params = [("state", "all"), ("sort", "updated"), ("direction", "asc")];
     if let Some(ref wm) = watermark {
@@ -401,7 +424,9 @@ async fn ingest_prs(
     }
 
     let watermark_dt = watermark.as_deref().and_then(|s| {
-        DateTime::parse_from_rfc3339(s).ok().map(|d| d.with_timezone(&Utc))
+        DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|d| d.with_timezone(&Utc))
     });
 
     let items = paginate(
@@ -427,11 +452,8 @@ async fn ingest_prs(
                 }
             }
         }
-        new_watermark = latest_ts(
-            new_watermark.as_deref(),
-            pr["updated_at"].as_str(),
-        )
-        .map(str::to_string);
+        new_watermark =
+            latest_ts(new_watermark.as_deref(), pr["updated_at"].as_str()).map(str::to_string);
 
         pending.push(pr);
         if pending.len() >= EMBED_BATCH {
@@ -457,21 +479,13 @@ async fn flush_prs(
     }
     let contents: Vec<String> = pending
         .iter()
-        .map(|pr| {
-            make_content(
-                pr["title"].as_str().unwrap_or(""),
-                pr["body"].as_str(),
-            )
-        })
+        .map(|pr| make_content(pr["title"].as_str().unwrap_or(""), pr["body"].as_str()))
         .collect();
     let texts: Vec<&str> = contents.iter().map(String::as_str).collect();
     let embeddings = embed_batch(&texts).await?;
 
     for (pr, emb) in pending.iter().zip(embeddings.iter()) {
-        let content = make_content(
-            pr["title"].as_str().unwrap_or(""),
-            pr["body"].as_str(),
-        );
+        let content = make_content(pr["title"].as_str().unwrap_or(""), pr["body"].as_str());
         let hash = content_hash(&content);
         let state = if pr["merged_at"].is_string() {
             "merged"
@@ -531,7 +545,11 @@ async fn ingest_issue_comments(
     force: bool,
 ) -> Result<usize> {
     let scope = format!("{repo}:issue_comments");
-    let watermark = if force { None } else { get_watermark(pool, "github", &scope).await };
+    let watermark = if force {
+        None
+    } else {
+        get_watermark(pool, "github", &scope).await
+    };
 
     let mut params = vec![("sort", "updated"), ("direction", "asc")];
     let since_owned: String;
@@ -568,11 +586,8 @@ async fn ingest_issue_comments(
         if issue_number.is_none() {
             continue;
         }
-        new_watermark = latest_ts(
-            new_watermark.as_deref(),
-            comment["updated_at"].as_str(),
-        )
-        .map(str::to_string);
+        new_watermark =
+            latest_ts(new_watermark.as_deref(), comment["updated_at"].as_str()).map(str::to_string);
 
         pending.push(comment);
         if pending.len() >= EMBED_BATCH {
@@ -652,7 +667,11 @@ async fn ingest_pr_comments(
     force: bool,
 ) -> Result<usize> {
     let scope = format!("{repo}:pr_comments");
-    let watermark = if force { None } else { get_watermark(pool, "github", &scope).await };
+    let watermark = if force {
+        None
+    } else {
+        get_watermark(pool, "github", &scope).await
+    };
 
     let mut params = vec![("sort", "updated"), ("direction", "asc")];
     let since_owned: String;
@@ -688,11 +707,8 @@ async fn ingest_pr_comments(
         if pr_number.is_none() {
             continue;
         }
-        new_watermark = latest_ts(
-            new_watermark.as_deref(),
-            comment["updated_at"].as_str(),
-        )
-        .map(str::to_string);
+        new_watermark =
+            latest_ts(new_watermark.as_deref(), comment["updated_at"].as_str()).map(str::to_string);
 
         pending.push(comment);
         if pending.len() >= EMBED_BATCH {
@@ -743,7 +759,9 @@ async fn flush_pr_comments(
             Some(p) => format!("{p}\n{body}"),
             None => body.to_string(),
         };
-        let diff_hunk = comment["diff_hunk"].as_str().map(|s| &s[..s.len().min(2000)]);
+        let diff_hunk = comment["diff_hunk"]
+            .as_str()
+            .map(|s| &s[..s.len().min(2000)]);
         let hash = content_hash(&content);
 
         sqlx::query(

@@ -70,7 +70,10 @@ pub fn fmt_github(rows: &[GithubRow]) -> String {
             "### {kind} #{}: {}  [{}]  (score={:.4})",
             r.number, r.title, state, r.rrf_score
         );
-        header += &format!("\n**Repo:** {}  **Author:** {}  **Created:** {}", r.repo, author, created);
+        header += &format!(
+            "\n**Repo:** {}  **Author:** {}  **Created:** {}",
+            r.repo, author, created
+        );
         if !labels.is_empty() {
             header += &format!("  **Labels:** {labels}");
         }

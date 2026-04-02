@@ -1,9 +1,7 @@
 use rmcp::{
-    Error as McpError,
-    ServerHandler,
+    Error as McpError, ServerHandler,
     model::{CallToolResult, Content, ServerCapabilities, ServerInfo},
-    schemars,
-    tool,
+    schemars, tool,
 };
 use serde::Deserialize;
 use sqlx::PgPool;
@@ -30,7 +28,9 @@ pub struct SearchCodeParams {
     #[schemars(description = "Filter by language: typescript, python, rust, go, etc.")]
     #[serde(default)]
     pub language: Option<String>,
-    #[schemars(description = "Filter by symbol kind: function, class, interface, type, enum, chunk")]
+    #[schemars(
+        description = "Filter by symbol kind: function, class, interface, type, enum, chunk"
+    )]
     #[serde(default)]
     pub symbol_kind: Option<String>,
 }
@@ -42,7 +42,9 @@ pub struct SearchDocsParams {
     #[schemars(description = "Number of results to return (default 10)")]
     #[serde(default = "default_limit")]
     pub limit: i32,
-    #[schemars(description = "Filter by document kind: readme, workflow, sop, plan, skill, agent_instruction")]
+    #[schemars(
+        description = "Filter by document kind: readme, workflow, sop, plan, skill, agent_instruction"
+    )]
     #[serde(default)]
     pub doc_kind: Option<String>,
 }
@@ -113,7 +115,12 @@ impl CodeSearchServer {
         &self,
         #[tool(aggr)] params: SearchCodeParams,
     ) -> Result<CallToolResult, McpError> {
-        let SearchCodeParams { query, limit, language, symbol_kind } = params;
+        let SearchCodeParams {
+            query,
+            limit,
+            language,
+            symbol_kind,
+        } = params;
 
         let query_vec = match embed::embed(&query).await {
             Ok(v) => v,
@@ -159,13 +166,10 @@ impl CodeSearchServer {
         let scores = rerank::rerank(&query, &docs).await;
 
         let text = if let Some(ref score_vec) = scores {
-            let mut indexed: Vec<(usize, f32)> =
-                score_vec.iter().copied().enumerate().collect();
-            indexed
-                .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            let mut indexed: Vec<(usize, f32)> = score_vec.iter().copied().enumerate().collect();
+            indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
             let top: Vec<_> = indexed.into_iter().take(limit as usize).collect();
-            let final_rows: Vec<db::ChunkRow> =
-                top.iter().map(|(i, _)| rows[*i].clone()).collect();
+            let final_rows: Vec<db::ChunkRow> = top.iter().map(|(i, _)| rows[*i].clone()).collect();
             let final_scores: Vec<f32> = top.iter().map(|(_, s)| *s).collect();
             fmt::fmt_chunks(&final_rows, Some(&final_scores), "rerank")
         } else {
@@ -185,7 +189,12 @@ impl CodeSearchServer {
         &self,
         #[tool(aggr)] params: SearchCodeParams,
     ) -> Result<CallToolResult, McpError> {
-        let SearchCodeParams { query, limit, language, symbol_kind } = params;
+        let SearchCodeParams {
+            query,
+            limit,
+            language,
+            symbol_kind,
+        } = params;
 
         let rows = match db::bm25_search(
             &self.pool,
@@ -219,7 +228,11 @@ impl CodeSearchServer {
         &self,
         #[tool(aggr)] params: SearchDocsParams,
     ) -> Result<CallToolResult, McpError> {
-        let SearchDocsParams { query, limit, doc_kind } = params;
+        let SearchDocsParams {
+            query,
+            limit,
+            doc_kind,
+        } = params;
 
         let query_vec = match embed::embed(&query).await {
             Ok(v) => v,
@@ -262,7 +275,13 @@ impl CodeSearchServer {
         &self,
         #[tool(aggr)] params: SearchGithubParams,
     ) -> Result<CallToolResult, McpError> {
-        let SearchGithubParams { query, limit, entity_type, repo, state } = params;
+        let SearchGithubParams {
+            query,
+            limit,
+            entity_type,
+            repo,
+            state,
+        } = params;
 
         let query_vec = match embed::embed(&query).await {
             Ok(v) => v,
@@ -292,9 +311,9 @@ impl CodeSearchServer {
             }
         };
 
-        Ok(CallToolResult::success(vec![Content::text(fmt::fmt_github(
-            &rows,
-        ))]))
+        Ok(CallToolResult::success(vec![Content::text(
+            fmt::fmt_github(&rows),
+        )]))
     }
 
     // ── list_repos ────────────────────────────────────────────────────────────
@@ -339,28 +358,27 @@ impl CodeSearchServer {
         &self,
         #[tool(aggr)] params: FetchPackageParams,
     ) -> Result<CallToolResult, McpError> {
-        let FetchPackageParams { package, version, ecosystem } = params;
+        let FetchPackageParams {
+            package,
+            version,
+            ecosystem,
+        } = params;
         let pkg_ver = format!("{package}-{version}");
 
         let (subcommand, repo_path_keys): (&str, Vec<String>) = match ecosystem.as_str() {
-            "rust" => (
-                "crate",
-                vec![format!("crates.io::{pkg_ver}")],
-            ),
+            "rust" => ("crate", vec![format!("crates.io::{pkg_ver}")]),
             _ => (
                 "hackage",
-                vec![
-                    format!("chap::{pkg_ver}"),
-                    format!("hackage::{pkg_ver}"),
-                ],
+                vec![format!("chap::{pkg_ver}"), format!("hackage::{pkg_ver}")],
             ),
         };
 
         // Check if already indexed.
         let existing: i64 = {
             let mut q = "SELECT COUNT(*) FROM code_chunks WHERE ".to_string();
-            let placeholders: Vec<String> =
-                (1..=repo_path_keys.len()).map(|i| format!("repo_path = ${i}")).collect();
+            let placeholders: Vec<String> = (1..=repo_path_keys.len())
+                .map(|i| format!("repo_path = ${i}"))
+                .collect();
             q.push_str(&placeholders.join(" OR "));
             let mut query = sqlx::query_scalar(&q);
             for key in &repo_path_keys {
@@ -377,7 +395,11 @@ impl CodeSearchServer {
         };
 
         if existing > 0 {
-            let language = if ecosystem == "rust" { "rust" } else { "haskell" };
+            let language = if ecosystem == "rust" {
+                "rust"
+            } else {
+                "haskell"
+            };
             return Ok(CallToolResult::success(vec![Content::text(format!(
                 "Already indexed: {pkg_ver} ({existing} chunks).\n\
                  Use search_code with language={language} to query it."
@@ -387,8 +409,8 @@ impl CodeSearchServer {
         // Call the ingest functions directly (no subprocess).
         let result = match subcommand {
             "hackage" => ingest_hackage(&self.pool, &package, &version, false).await,
-            "crate"   => ingest_crate(&self.pool, &package, &version, false).await,
-            _         => Err(anyhow::anyhow!("unknown ecosystem: {ecosystem}")),
+            "crate" => ingest_crate(&self.pool, &package, &version, false).await,
+            _ => Err(anyhow::anyhow!("unknown ecosystem: {ecosystem}")),
         };
 
         if let Err(e) = result {
@@ -400,8 +422,9 @@ impl CodeSearchServer {
         // Query final chunk count.
         let chunks: i64 = {
             let mut q = "SELECT COUNT(*) FROM code_chunks WHERE ".to_string();
-            let placeholders: Vec<String> =
-                (1..=repo_path_keys.len()).map(|i| format!("repo_path = ${i}")).collect();
+            let placeholders: Vec<String> = (1..=repo_path_keys.len())
+                .map(|i| format!("repo_path = ${i}"))
+                .collect();
             q.push_str(&placeholders.join(" OR "));
             let mut query = sqlx::query_scalar(&q);
             for key in &repo_path_keys {
@@ -410,7 +433,11 @@ impl CodeSearchServer {
             query.fetch_one(&self.pool).await.unwrap_or(0)
         };
 
-        let language = if ecosystem == "rust" { "rust" } else { "haskell" };
+        let language = if ecosystem == "rust" {
+            "rust"
+        } else {
+            "haskell"
+        };
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Indexed {pkg_ver} from {ecosystem}: {chunks} chunks.\n\
              Use search_code with language={language} to query it."
@@ -428,7 +455,10 @@ impl CodeSearchServer {
         &self,
         #[tool(aggr)] params: GetFileParams,
     ) -> Result<CallToolResult, McpError> {
-        let GetFileParams { repo_path, file_path } = params;
+        let GetFileParams {
+            repo_path,
+            file_path,
+        } = params;
 
         let rows = match db::get_file_chunks(&self.pool, &repo_path, &file_path).await {
             Ok(r) => r,
@@ -447,18 +477,24 @@ impl CodeSearchServer {
         // Reconstruct the file from ordered chunks and write to /tmp.
         // Chunks may overlap (overlapping-window fallback), so de-duplicate by
         // collecting all lines into a BTreeMap keyed by 1-indexed line number.
-        let mut line_map: std::collections::BTreeMap<i32, String> = std::collections::BTreeMap::new();
+        let mut line_map: std::collections::BTreeMap<i32, String> =
+            std::collections::BTreeMap::new();
         for r in &rows {
             let start = r.start_line.unwrap_or(1).max(1);
             for (offset, line) in r.content.lines().enumerate() {
-                line_map.entry(start + offset as i32).or_insert_with(|| line.to_string());
+                line_map
+                    .entry(start + offset as i32)
+                    .or_insert_with(|| line.to_string());
             }
         }
         let source = line_map.values().cloned().collect::<Vec<_>>().join("\n");
 
         // Build a stable, human-readable path under /tmp/agentic-nix/.
         // Sanitise repo_path (colons → underscores) so it's a valid directory name.
-        let safe_repo = repo_path.replace("::", "__").replace(':', "_").replace('/', "_");
+        let safe_repo = repo_path
+            .replace("::", "__")
+            .replace(':', "_")
+            .replace('/', "_");
         let out_path = std::path::PathBuf::from("/tmp/agentic-nix")
             .join(&safe_repo)
             .join(&file_path);
@@ -476,7 +512,10 @@ impl CodeSearchServer {
             ))]));
         }
 
-        let lang = rows.first().and_then(|r| r.language.as_deref()).unwrap_or("text");
+        let lang = rows
+            .first()
+            .and_then(|r| r.language.as_deref())
+            .unwrap_or("text");
         Ok(CallToolResult::success(vec![Content::text(format!(
             "File written to: {}\n({} lines, language: {lang})\n\
              Use the Read tool to inspect it.",
@@ -518,4 +557,3 @@ impl ServerHandler for CodeSearchServer {
         }
     }
 }
-

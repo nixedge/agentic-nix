@@ -11,7 +11,10 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "ingest", about = "Index code / docs / GitHub into PostgreSQL for hybrid search")]
+#[command(
+    name = "ingest",
+    about = "Index code / docs / GitHub into PostgreSQL for hybrid search"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -76,13 +79,18 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let dsn = std::env::var("PG_DSN")
-        .unwrap_or_else(|_| "postgresql://127.0.0.1:5432/codebase".into());
+    let dsn =
+        std::env::var("PG_DSN").unwrap_or_else(|_| "postgresql://127.0.0.1:5432/codebase".into());
     let pool = sqlx::PgPool::connect(&dsn).await?;
 
     let cli = Cli::parse();
     match cli.command {
-        Commands::Code { repo_path, force, pattern, no_docs } => {
+        Commands::Code {
+            repo_path,
+            force,
+            pattern,
+            no_docs,
+        } => {
             code::ingest_code(&pool, &repo_path, force, &pattern, None).await?;
             if !no_docs {
                 docs::ingest_docs(&pool, &repo_path, force).await?;
@@ -91,13 +99,25 @@ async fn main() -> Result<()> {
         Commands::Docs { repo_path, force } => {
             docs::ingest_docs(&pool, &repo_path, force).await?;
         }
-        Commands::Github { repo, force, stream } => {
+        Commands::Github {
+            repo,
+            force,
+            stream,
+        } => {
             github::ingest_github(&pool, &repo, force, &stream).await?;
         }
-        Commands::Hackage { package, version, force } => {
+        Commands::Hackage {
+            package,
+            version,
+            force,
+        } => {
             hackage::ingest_hackage(&pool, &package, &version, force).await?;
         }
-        Commands::Crate { package, version, force } => {
+        Commands::Crate {
+            package,
+            version,
+            force,
+        } => {
             crates::ingest_crate(&pool, &package, &version, force).await?;
         }
     }

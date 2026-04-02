@@ -1,8 +1,5 @@
 {inputs, ...}: {
-  perSystem = {
-    pkgs,
-    ...
-  }: {
+  perSystem = {pkgs, ...}: {
     process-compose.dev = {
       imports = [inputs.services-flake.processComposeModules.default];
 

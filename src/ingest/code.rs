@@ -69,7 +69,10 @@ pub async fn ingest_code(
 
     // Load existing (file_path → (mtime_nanos, content_hash)) for incremental skip.
     // mtime is used as a cheap stat-based pre-check; hash is the fallback for correctness.
-    struct FileInfo { mtime_nanos: Option<i64>, content_hash: String }
+    struct FileInfo {
+        mtime_nanos: Option<i64>,
+        content_hash: String,
+    }
     let existing: HashMap<String, FileInfo> = if force {
         HashMap::new()
     } else {
@@ -89,7 +92,13 @@ pub async fn ingest_code(
                 let fp: String = r.get("file_path");
                 let mt: Option<i64> = r.get("file_mtime");
                 let hash: String = r.get("content_hash");
-                (fp, FileInfo { mtime_nanos: mt, content_hash: hash })
+                (
+                    fp,
+                    FileInfo {
+                        mtime_nanos: mt,
+                        content_hash: hash,
+                    },
+                )
             })
             .collect()
     };
@@ -317,7 +326,15 @@ fn detect_language(path: &Path) -> String {
 
 // ── Chunking ──────────────────────────────────────────────────────────────────
 
-const SYMBOL_LANGUAGES: &[&str] = &["typescript", "javascript", "python", "rust", "haskell", "latex", "nix"];
+const SYMBOL_LANGUAGES: &[&str] = &[
+    "typescript",
+    "javascript",
+    "python",
+    "rust",
+    "haskell",
+    "latex",
+    "nix",
+];
 
 fn make_chunks(source: &str, language: &str) -> Vec<Chunk> {
     if !SYMBOL_LANGUAGES.contains(&language) {
@@ -406,11 +423,7 @@ fn chunk_lines(source: &str) -> Vec<Chunk> {
 
 // ── Flush batch to DB ─────────────────────────────────────────────────────────
 
-async fn flush(
-    pending: &mut Vec<ChunkRecord>,
-    pool: &PgPool,
-    total: &mut usize,
-) -> Result<()> {
+async fn flush(pending: &mut Vec<ChunkRecord>, pool: &PgPool, total: &mut usize) -> Result<()> {
     if pending.is_empty() {
         return Ok(());
     }
@@ -538,7 +551,10 @@ instance Show Color where
         let has_instance = chunks
             .iter()
             .any(|c| c.symbol_kind.as_deref() == Some("impl") && c.content.contains("Show Color"));
-        assert!(has_instance, "expected an impl chunk for 'instance Show Color'");
+        assert!(
+            has_instance,
+            "expected an impl chunk for 'instance Show Color'"
+        );
     }
 
     #[test]
@@ -559,6 +575,9 @@ instance Show Foo where
         let has_instance = chunks
             .iter()
             .any(|c| c.symbol_kind.as_deref() == Some("impl") && c.content.contains("Show Foo"));
-        assert!(has_instance, "instance inside CPP block was silently dropped");
+        assert!(
+            has_instance,
+            "instance inside CPP block was silently dropped"
+        );
     }
 }

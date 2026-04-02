@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use flate2::read::GzDecoder;
 use sqlx::PgPool;
 use std::io::Cursor;
@@ -9,12 +9,7 @@ use super::code::ingest_code;
 
 const CRATES_IO_BASE: &str = "https://static.crates.io/crates";
 
-pub async fn ingest_crate(
-    pool: &PgPool,
-    package: &str,
-    version: &str,
-    force: bool,
-) -> Result<()> {
+pub async fn ingest_crate(pool: &PgPool, package: &str, version: &str, force: bool) -> Result<()> {
     let pkg_ver = format!("{package}-{version}");
     let repo_path_str = format!("crates.io::{pkg_ver}");
 
@@ -27,9 +22,7 @@ pub async fn ingest_crate(
                 .unwrap_or(0);
 
         if count > 0 {
-            eprintln!(
-                "Crate {pkg_ver} already indexed ({count} chunks). Use --force to re-index."
-            );
+            eprintln!("Crate {pkg_ver} already indexed ({count} chunks). Use --force to re-index.");
             return Ok(());
         }
     }
@@ -53,7 +46,10 @@ pub async fn ingest_crate(
         bail!("Crate {pkg_ver} not found on crates.io ({})", resp.status());
     }
 
-    let bytes = resp.bytes().await.context("Failed to read crates.io response body")?;
+    let bytes = resp
+        .bytes()
+        .await
+        .context("Failed to read crates.io response body")?;
     eprintln!("Fetched {pkg_ver} ({} bytes). Extracting...", bytes.len());
 
     let tmp = TempDir::new().context("Failed to create temp directory")?;
@@ -61,7 +57,9 @@ pub async fn ingest_crate(
     // .crate files are gzipped tarballs, identical format to .tar.gz.
     let gz = GzDecoder::new(Cursor::new(bytes.as_ref()));
     let mut archive = Archive::new(gz);
-    archive.unpack(tmp.path()).context("Failed to extract .crate tarball")?;
+    archive
+        .unpack(tmp.path())
+        .context("Failed to extract .crate tarball")?;
 
     // Tarballs extract to a single top-level {name}-{version}/ directory.
     let expected = tmp.path().join(&pkg_ver);

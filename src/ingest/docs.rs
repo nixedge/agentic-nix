@@ -36,10 +36,7 @@ const SKIP_DIRS: &[&str] = &[
 ];
 
 pub async fn ingest_docs(pool: &PgPool, repo_path: &Path, force: bool) -> Result<()> {
-    let repo_str = repo_path
-        .canonicalize()?
-        .to_string_lossy()
-        .into_owned();
+    let repo_str = repo_path.canonicalize()?.to_string_lossy().into_owned();
 
     // Discover markdown files matching doc patterns
     let candidates = collect_docs(repo_path);
@@ -47,7 +44,11 @@ pub async fn ingest_docs(pool: &PgPool, repo_path: &Path, force: bool) -> Result
         eprintln!("No documentation files found.");
         return Ok(());
     }
-    eprintln!("Found {} documentation files in {}", candidates.len(), repo_str);
+    eprintln!(
+        "Found {} documentation files in {}",
+        candidates.len(),
+        repo_str
+    );
 
     if force {
         let n: i64 = sqlx::query_scalar(
@@ -62,7 +63,10 @@ pub async fn ingest_docs(pool: &PgPool, repo_path: &Path, force: bool) -> Result
     }
 
     // Load existing (source_path → (mtime_nanos, content_hash)) for incremental skip.
-    struct FileInfo { mtime_nanos: Option<i64>, content_hash: String }
+    struct FileInfo {
+        mtime_nanos: Option<i64>,
+        content_hash: String,
+    }
     let existing: HashMap<String, FileInfo> = if force {
         HashMap::new()
     } else {
@@ -82,7 +86,13 @@ pub async fn ingest_docs(pool: &PgPool, repo_path: &Path, force: bool) -> Result
                 let sp: String = r.get("source_path");
                 let mt: Option<i64> = r.get("file_mtime");
                 let hash: String = r.get("content_hash");
-                (sp, FileInfo { mtime_nanos: mt, content_hash: hash })
+                (
+                    sp,
+                    FileInfo {
+                        mtime_nanos: mt,
+                        content_hash: hash,
+                    },
+                )
             })
             .collect()
     };
@@ -159,14 +169,21 @@ pub async fn ingest_docs(pool: &PgPool, repo_path: &Path, force: bool) -> Result
             }
         }
 
-        let title = extract_title(&source, abs_path.file_stem().and_then(|s| s.to_str()).unwrap_or(""));
+        let title = extract_title(
+            &source,
+            abs_path.file_stem().and_then(|s| s.to_str()).unwrap_or(""),
+        );
         let chunks = chunk_markdown(&source);
 
         for chunk in chunks {
             if chunk.content.trim().len() < MIN_CHUNK_CHARS {
                 continue;
             }
-            let preview: String = chunk.content.split_whitespace().collect::<Vec<_>>().join(" ");
+            let preview: String = chunk
+                .content
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
             let preview = truncate_to_char_boundary(&preview, 280);
             pending.push(DocRecord {
                 repo_path: repo_str.clone(),
@@ -287,7 +304,10 @@ fn extract_title(text: &str, fallback: &str) -> String {
 
 fn chunk_markdown(source: &str) -> Vec<MarkdownChunk> {
     if source.len() <= MAX_CHUNK_CHARS {
-        return vec![MarkdownChunk { index: 0, content: source.to_string() }];
+        return vec![MarkdownChunk {
+            index: 0,
+            content: source.to_string(),
+        }];
     }
 
     // Split on H2 headings
@@ -300,7 +320,10 @@ fn chunk_markdown(source: &str) -> Vec<MarkdownChunk> {
             continue;
         }
         if section.len() <= MAX_CHUNK_CHARS {
-            chunks.push(MarkdownChunk { index: idx, content: section.trim_end().to_string() });
+            chunks.push(MarkdownChunk {
+                index: idx,
+                content: section.trim_end().to_string(),
+            });
             idx += 1;
         } else {
             // Further split on H3
@@ -349,11 +372,7 @@ fn split_on_heading(text: &str, prefix: &str) -> Vec<String> {
 
 // ── Flush to DB ───────────────────────────────────────────────────────────────
 
-async fn flush_docs(
-    pending: &mut Vec<DocRecord>,
-    pool: &PgPool,
-    total: &mut usize,
-) -> Result<()> {
+async fn flush_docs(pending: &mut Vec<DocRecord>, pool: &PgPool, total: &mut usize) -> Result<()> {
     if pending.is_empty() {
         return Ok(());
     }

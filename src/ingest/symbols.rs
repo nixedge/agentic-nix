@@ -244,7 +244,11 @@ fn visit_py_node(
                     if let Some(name) = node_name(&child, source) {
                         let start = node.start_position().row; // include decorators
                         let end = node.end_position().row;
-                        let kind = if child.kind() == "class_definition" { "class" } else { "function" };
+                        let kind = if child.kind() == "class_definition" {
+                            "class"
+                        } else {
+                            "function"
+                        };
                         syms.push(Symbol {
                             name,
                             kind: kind.into(),
@@ -555,9 +559,8 @@ fn visit_latex_node(
                         end_line: end + 1,
                     });
                 }
-                "theorem" | "lemma" | "definition" | "corollary" | "proposition"
-                | "proof" | "remark" | "example" | "conjecture" | "axiom"
-                | "claim" | "observation" => {
+                "theorem" | "lemma" | "definition" | "corollary" | "proposition" | "proof"
+                | "remark" | "example" | "conjecture" | "axiom" | "claim" | "observation" => {
                     let name = latex_label_text(node, source)
                         .unwrap_or_else(|| format!("{}@L{}", env, start + 1));
                     syms.push(Symbol {
@@ -597,14 +600,26 @@ fn visit_latex_node(
 fn latex_section_title(node: &tree_sitter::Node<'_>, source: &[u8]) -> Option<String> {
     let text_node = node.child_by_field_name("text")?;
     let raw = text_node.utf8_text(source).ok()?;
-    Some(raw.trim().trim_start_matches('{').trim_end_matches('}').trim().to_string())
+    Some(
+        raw.trim()
+            .trim_start_matches('{')
+            .trim_end_matches('}')
+            .trim()
+            .to_string(),
+    )
 }
 
 fn latex_env_name(node: &tree_sitter::Node<'_>, source: &[u8]) -> Option<String> {
     let begin = node.child_by_field_name("begin")?;
     let name_node = begin.child_by_field_name("name")?;
     let raw = name_node.utf8_text(source).ok()?;
-    Some(raw.trim().trim_start_matches('{').trim_end_matches('}').trim().to_string())
+    Some(
+        raw.trim()
+            .trim_start_matches('{')
+            .trim_end_matches('}')
+            .trim()
+            .to_string(),
+    )
 }
 
 fn latex_label_text(node: &tree_sitter::Node<'_>, source: &[u8]) -> Option<String> {
@@ -613,7 +628,13 @@ fn latex_label_text(node: &tree_sitter::Node<'_>, source: &[u8]) -> Option<Strin
         if child.kind() == "label_definition" {
             if let Some(name_node) = child.child_by_field_name("name") {
                 if let Ok(raw) = name_node.utf8_text(source) {
-                    return Some(raw.trim().trim_start_matches('{').trim_end_matches('}').trim().to_string());
+                    return Some(
+                        raw.trim()
+                            .trim_start_matches('{')
+                            .trim_end_matches('}')
+                            .trim()
+                            .to_string(),
+                    );
                 }
             }
         }
@@ -627,7 +648,13 @@ fn latex_caption_text(node: &tree_sitter::Node<'_>, source: &[u8]) -> Option<Str
         if child.kind() == "caption" {
             if let Some(long_node) = child.child_by_field_name("long") {
                 if let Ok(raw) = long_node.utf8_text(source) {
-                    return Some(raw.trim().trim_start_matches('{').trim_end_matches('}').trim().to_string());
+                    return Some(
+                        raw.trim()
+                            .trim_start_matches('{')
+                            .trim_end_matches('}')
+                            .trim()
+                            .to_string(),
+                    );
                 }
             }
         }
@@ -865,7 +892,9 @@ fn group_haskell_decls(decls: &[HsDecl], lines: &[&str]) -> Vec<Symbol> {
                 i += 1;
             }
             "class_declaration" | "class" => {
-                let name = d.name.clone()
+                let name = d
+                    .name
+                    .clone()
                     .unwrap_or_else(|| format!("class@L{}", d.start_row + 1));
                 let doc_start = haddock_start(lines, d.start_row);
                 syms.push(Symbol {
@@ -911,17 +940,28 @@ mod tests {
     fn sym(lang: &str, src: &str) -> Vec<Symbol> {
         extract_symbols(src, lang)
     }
-    fn hs(src: &str)  -> Vec<Symbol> { sym("haskell",    src) }
-    fn rs(src: &str)  -> Vec<Symbol> { sym("rust",       src) }
-    fn py(src: &str)  -> Vec<Symbol> { sym("python",     src) }
-    fn ts(src: &str)  -> Vec<Symbol> { sym("typescript", src) }
-    fn nix(src: &str) -> Vec<Symbol> { sym("nix",        src) }
+    fn hs(src: &str) -> Vec<Symbol> {
+        sym("haskell", src)
+    }
+    fn rs(src: &str) -> Vec<Symbol> {
+        sym("rust", src)
+    }
+    fn py(src: &str) -> Vec<Symbol> {
+        sym("python", src)
+    }
+    fn ts(src: &str) -> Vec<Symbol> {
+        sym("typescript", src)
+    }
+    fn nix(src: &str) -> Vec<Symbol> {
+        sym("nix", src)
+    }
 
     fn names(syms: &[Symbol]) -> Vec<&str> {
         syms.iter().map(|s| s.name.as_str()).collect()
     }
     fn find<'a>(syms: &'a [Symbol], kind: &str, name_pat: &str) -> Option<&'a Symbol> {
-        syms.iter().find(|s| s.kind == kind && s.name.contains(name_pat))
+        syms.iter()
+            .find(|s| s.kind == kind && s.name.contains(name_pat))
     }
 
     // ── unsupported language falls back to empty (no crash) ───────────────────
@@ -935,7 +975,10 @@ mod tests {
     #[test]
     fn empty_source_returns_empty_for_all_languages() {
         for lang in &["haskell", "rust", "python", "typescript", "nix"] {
-            assert!(sym(lang, "").is_empty(), "language {lang} should return empty for empty source");
+            assert!(
+                sym(lang, "").is_empty(),
+                "language {lang} should return empty for empty source"
+            );
         }
     }
 
@@ -971,15 +1014,25 @@ mod tests {
     fn hs_extracts_top_level_function() {
         let src = "module Foo where\n\nfoo :: Int -> Int\nfoo x = x + 1\n";
         let syms = hs(src);
-        assert!(names(&syms).contains(&"foo"), "expected 'foo'; got {:?}", names(&syms));
+        assert!(
+            names(&syms).contains(&"foo"),
+            "expected 'foo'; got {:?}",
+            names(&syms)
+        );
     }
 
     #[test]
     fn hs_extracts_instance_declaration() {
         let src = "module Foo where\n\ninstance Show () where\n    show _ = \"()\"\n";
         let syms = hs(src);
-        let inst = syms.iter().find(|s| s.kind == "impl" && s.content.contains("Show ()"));
-        assert!(inst.is_some(), "expected impl chunk for 'instance Show ()'; got {:?}", names(&syms));
+        let inst = syms
+            .iter()
+            .find(|s| s.kind == "impl" && s.content.contains("Show ()"));
+        assert!(
+            inst.is_some(),
+            "expected impl chunk for 'instance Show ()'; got {:?}",
+            names(&syms)
+        );
     }
 
     #[test]
@@ -987,7 +1040,11 @@ mod tests {
         let src = "module Foo where\n\nclass MyClass a where\n    method :: a -> String\n";
         let syms = hs(src);
         let cls = syms.iter().find(|s| s.kind == "class");
-        assert!(cls.is_some(), "expected a class chunk; got {:?}", names(&syms));
+        assert!(
+            cls.is_some(),
+            "expected a class chunk; got {:?}",
+            names(&syms)
+        );
         assert!(cls.unwrap().name.contains("MyClass"));
     }
 
@@ -995,21 +1052,33 @@ mod tests {
     fn hs_extracts_data_type() {
         let src = "module Foo where\n\ndata Color = Red | Green | Blue\n";
         let syms = hs(src);
-        assert!(find(&syms, "struct", "Color").is_some(), "expected struct 'Color'; got {:?}", names(&syms));
+        assert!(
+            find(&syms, "struct", "Color").is_some(),
+            "expected struct 'Color'; got {:?}",
+            names(&syms)
+        );
     }
 
     #[test]
     fn hs_extracts_newtype() {
         let src = "module Foo where\n\nnewtype Wrapper a = Wrapper { unwrap :: a }\n";
         let syms = hs(src);
-        assert!(find(&syms, "struct", "Wrapper").is_some(), "expected struct 'Wrapper'; got {:?}", names(&syms));
+        assert!(
+            find(&syms, "struct", "Wrapper").is_some(),
+            "expected struct 'Wrapper'; got {:?}",
+            names(&syms)
+        );
     }
 
     #[test]
     fn hs_extracts_type_alias() {
         let src = "module Foo where\n\ntype Name = String\n";
         let syms = hs(src);
-        assert!(find(&syms, "type", "Name").is_some(), "expected type 'Name'; got {:?}", names(&syms));
+        assert!(
+            find(&syms, "type", "Name").is_some(),
+            "expected type 'Name'; got {:?}",
+            names(&syms)
+        );
     }
 
     #[test]
@@ -1017,7 +1086,11 @@ mod tests {
         let src = "module Foo where\n\nbar :: Int -> Int\nbar x = x * 2\n";
         let syms = hs(src);
         let bars: Vec<_> = syms.iter().filter(|s| s.name == "bar").collect();
-        assert_eq!(bars.len(), 1, "signature and body should merge into one symbol");
+        assert_eq!(
+            bars.len(),
+            1,
+            "signature and body should merge into one symbol"
+        );
         assert!(bars[0].content.contains("bar :: Int -> Int"));
         assert!(bars[0].content.contains("bar x = x * 2"));
     }
@@ -1036,15 +1109,24 @@ mod tests {
     fn hs_haddock_comment_included_in_content() {
         let src = "module Foo where\n\n-- | Adds one.\nadd1 :: Int -> Int\nadd1 x = x + 1\n";
         let syms = hs(src);
-        let s = syms.iter().find(|s| s.name == "add1").expect("expected 'add1'");
-        assert!(s.content.contains("-- | Adds one."), "haddock comment should be in content");
+        let s = syms
+            .iter()
+            .find(|s| s.name == "add1")
+            .expect("expected 'add1'");
+        assert!(
+            s.content.contains("-- | Adds one."),
+            "haddock comment should be in content"
+        );
     }
 
     #[test]
     fn hs_line_numbers_are_1_indexed() {
         let src = "module Foo where\n\nfoo :: Int\nfoo = 42\n";
         let syms = hs(src);
-        let foo = syms.iter().find(|s| s.name == "foo").expect("expected 'foo'");
+        let foo = syms
+            .iter()
+            .find(|s| s.name == "foo")
+            .expect("expected 'foo'");
         assert!(foo.start_line >= 1);
         assert!(foo.end_line >= foo.start_line);
     }
@@ -1054,7 +1136,10 @@ mod tests {
         // Instances always get a name (possibly auto-generated) and are never silently dropped.
         let src = "module Foo where\n\ninstance Show () where\n    show _ = \"()\"\n";
         let syms = hs(src);
-        assert!(syms.iter().any(|s| s.kind == "impl"), "expected at least one impl chunk");
+        assert!(
+            syms.iter().any(|s| s.kind == "impl"),
+            "expected at least one impl chunk"
+        );
     }
 
     // ── CPP ───────────────────────────────────────────────────────────────────
@@ -1072,8 +1157,14 @@ instance Show Foo where
 #endif
 "#;
         let syms = hs(src);
-        let inst = syms.iter().find(|s| s.kind == "impl" && s.content.contains("Show Foo"));
-        assert!(inst.is_some(), "instance inside #if block was silently dropped; got {:?}", names(&syms));
+        let inst = syms
+            .iter()
+            .find(|s| s.kind == "impl" && s.content.contains("Show Foo"));
+        assert!(
+            inst.is_some(),
+            "instance inside #if block was silently dropped; got {:?}",
+            names(&syms)
+        );
     }
 
     #[test]
@@ -1088,8 +1179,14 @@ instance Show A where
 #endif
 "#;
         let syms = hs(src);
-        let inst = syms.iter().find(|s| s.kind == "impl" && s.content.contains("Show A"));
-        assert!(inst.is_some(), "instance inside nested #if blocks was dropped; got {:?}", names(&syms));
+        let inst = syms
+            .iter()
+            .find(|s| s.kind == "impl" && s.content.contains("Show A"));
+        assert!(
+            inst.is_some(),
+            "instance inside nested #if blocks was dropped; got {:?}",
+            names(&syms)
+        );
     }
 
     #[test]
@@ -1106,7 +1203,11 @@ flagged = 2
 #endif
 "#;
         let syms = hs(src);
-        assert!(names(&syms).contains(&"plain"), "non-CPP function missing; got {:?}", names(&syms));
+        assert!(
+            names(&syms).contains(&"plain"),
+            "non-CPP function missing; got {:?}",
+            names(&syms)
+        );
     }
 
     // ══ Rust ══════════════════════════════════════════════════════════════════
@@ -1115,42 +1216,66 @@ flagged = 2
     fn rs_extracts_function() {
         let src = "fn add(a: i32, b: i32) -> i32 { a + b }\n";
         let syms = rs(src);
-        assert!(find(&syms, "function", "add").is_some(), "expected fn 'add'; got {:?}", names(&syms));
+        assert!(
+            find(&syms, "function", "add").is_some(),
+            "expected fn 'add'; got {:?}",
+            names(&syms)
+        );
     }
 
     #[test]
     fn rs_extracts_struct() {
         let src = "struct Point { x: f64, y: f64 }\n";
         let syms = rs(src);
-        assert!(find(&syms, "struct", "Point").is_some(), "expected struct 'Point'; got {:?}", names(&syms));
+        assert!(
+            find(&syms, "struct", "Point").is_some(),
+            "expected struct 'Point'; got {:?}",
+            names(&syms)
+        );
     }
 
     #[test]
     fn rs_extracts_enum() {
         let src = "enum Direction { North, South, East, West }\n";
         let syms = rs(src);
-        assert!(find(&syms, "enum", "Direction").is_some(), "expected enum 'Direction'; got {:?}", names(&syms));
+        assert!(
+            find(&syms, "enum", "Direction").is_some(),
+            "expected enum 'Direction'; got {:?}",
+            names(&syms)
+        );
     }
 
     #[test]
     fn rs_extracts_trait() {
         let src = "trait Animal { fn speak(&self) -> &str; }\n";
         let syms = rs(src);
-        assert!(find(&syms, "trait", "Animal").is_some(), "expected trait 'Animal'; got {:?}", names(&syms));
+        assert!(
+            find(&syms, "trait", "Animal").is_some(),
+            "expected trait 'Animal'; got {:?}",
+            names(&syms)
+        );
     }
 
     #[test]
     fn rs_extracts_type_alias() {
         let src = "type Meters = f64;\n";
         let syms = rs(src);
-        assert!(find(&syms, "type", "Meters").is_some(), "expected type 'Meters'; got {:?}", names(&syms));
+        assert!(
+            find(&syms, "type", "Meters").is_some(),
+            "expected type 'Meters'; got {:?}",
+            names(&syms)
+        );
     }
 
     #[test]
     fn rs_extracts_const() {
         let src = "const MAX: usize = 100;\n";
         let syms = rs(src);
-        assert!(find(&syms, "const", "MAX").is_some(), "expected const 'MAX'; got {:?}", names(&syms));
+        assert!(
+            find(&syms, "const", "MAX").is_some(),
+            "expected const 'MAX'; got {:?}",
+            names(&syms)
+        );
     }
 
     #[test]
@@ -1159,7 +1284,8 @@ flagged = 2
         let syms = rs(src);
         assert!(
             find(&syms, "function", "Foo::bar").is_some(),
-            "expected 'Foo::bar'; got {:?}", names(&syms)
+            "expected 'Foo::bar'; got {:?}",
+            names(&syms)
         );
     }
 
@@ -1167,7 +1293,10 @@ flagged = 2
     fn rs_doc_comment_included_in_content() {
         let src = "/// Computes something.\nfn compute() -> i32 { 42 }\n";
         let syms = rs(src);
-        let s = syms.iter().find(|s| s.name == "compute").expect("expected 'compute'");
+        let s = syms
+            .iter()
+            .find(|s| s.name == "compute")
+            .expect("expected 'compute'");
         assert!(s.content.contains("/// Computes something."));
     }
 
@@ -1177,7 +1306,8 @@ flagged = 2
         let syms = rs(src);
         assert!(
             find(&syms, "function", "helper").is_some(),
-            "fn inside inline mod should be extracted; got {:?}", names(&syms)
+            "fn inside inline mod should be extracted; got {:?}",
+            names(&syms)
         );
     }
 
@@ -1187,14 +1317,22 @@ flagged = 2
     fn py_extracts_function() {
         let src = "def greet(name):\n    return 'Hello ' + name\n";
         let syms = py(src);
-        assert!(find(&syms, "function", "greet").is_some(), "expected fn 'greet'; got {:?}", names(&syms));
+        assert!(
+            find(&syms, "function", "greet").is_some(),
+            "expected fn 'greet'; got {:?}",
+            names(&syms)
+        );
     }
 
     #[test]
     fn py_extracts_class() {
         let src = "class Animal:\n    def speak(self):\n        pass\n";
         let syms = py(src);
-        assert!(find(&syms, "class", "Animal").is_some(), "expected class 'Animal'; got {:?}", names(&syms));
+        assert!(
+            find(&syms, "class", "Animal").is_some(),
+            "expected class 'Animal'; got {:?}",
+            names(&syms)
+        );
     }
 
     #[test]
@@ -1203,7 +1341,8 @@ flagged = 2
         let syms = py(src);
         assert!(
             find(&syms, "function", "util").is_some(),
-            "decorated function should be extracted; got {:?}", names(&syms)
+            "decorated function should be extracted; got {:?}",
+            names(&syms)
         );
     }
 
@@ -1213,7 +1352,8 @@ flagged = 2
         let syms = py(src);
         assert!(
             find(&syms, "class", "Point").is_some(),
-            "decorated class should be extracted; got {:?}", names(&syms)
+            "decorated class should be extracted; got {:?}",
+            names(&syms)
         );
     }
 
@@ -1223,42 +1363,66 @@ flagged = 2
     fn ts_extracts_function() {
         let src = "function greet(name: string): string { return 'hi ' + name; }\n";
         let syms = ts(src);
-        assert!(find(&syms, "function", "greet").is_some(), "expected fn 'greet'; got {:?}", names(&syms));
+        assert!(
+            find(&syms, "function", "greet").is_some(),
+            "expected fn 'greet'; got {:?}",
+            names(&syms)
+        );
     }
 
     #[test]
     fn ts_extracts_class() {
         let src = "class Dog {\n  bark() { console.log('woof'); }\n}\n";
         let syms = ts(src);
-        assert!(find(&syms, "class", "Dog").is_some(), "expected class 'Dog'; got {:?}", names(&syms));
+        assert!(
+            find(&syms, "class", "Dog").is_some(),
+            "expected class 'Dog'; got {:?}",
+            names(&syms)
+        );
     }
 
     #[test]
     fn ts_extracts_interface() {
         let src = "interface Shape { area(): number; }\n";
         let syms = ts(src);
-        assert!(find(&syms, "interface", "Shape").is_some(), "expected interface 'Shape'; got {:?}", names(&syms));
+        assert!(
+            find(&syms, "interface", "Shape").is_some(),
+            "expected interface 'Shape'; got {:?}",
+            names(&syms)
+        );
     }
 
     #[test]
     fn ts_extracts_type_alias() {
         let src = "type Id = string | number;\n";
         let syms = ts(src);
-        assert!(find(&syms, "type", "Id").is_some(), "expected type 'Id'; got {:?}", names(&syms));
+        assert!(
+            find(&syms, "type", "Id").is_some(),
+            "expected type 'Id'; got {:?}",
+            names(&syms)
+        );
     }
 
     #[test]
     fn ts_extracts_enum() {
         let src = "enum Color { Red, Green, Blue }\n";
         let syms = ts(src);
-        assert!(find(&syms, "enum", "Color").is_some(), "expected enum 'Color'; got {:?}", names(&syms));
+        assert!(
+            find(&syms, "enum", "Color").is_some(),
+            "expected enum 'Color'; got {:?}",
+            names(&syms)
+        );
     }
 
     #[test]
     fn ts_exported_function_extracted() {
         let src = "export function foo(): void {}\n";
         let syms = ts(src);
-        assert!(find(&syms, "function", "foo").is_some(), "exported fn should be extracted; got {:?}", names(&syms));
+        assert!(
+            find(&syms, "function", "foo").is_some(),
+            "exported fn should be extracted; got {:?}",
+            names(&syms)
+        );
     }
 
     #[test]
@@ -1267,7 +1431,8 @@ flagged = 2
         let syms = ts(src);
         assert!(
             find(&syms, "function", "handler").is_some(),
-            "const arrow fn should be extracted; got {:?}", names(&syms)
+            "const arrow fn should be extracted; got {:?}",
+            names(&syms)
         );
     }
 
@@ -1278,14 +1443,26 @@ flagged = 2
         let src = "{ foo = 42; bar = \"hello\"; }\n";
         let syms = nix(src);
         // Nix bindings are emitted with kind "binding".
-        assert!(find(&syms, "binding", "foo").is_some(), "expected binding 'foo'; got {:?}", names(&syms));
-        assert!(find(&syms, "binding", "bar").is_some(), "expected binding 'bar'; got {:?}", names(&syms));
+        assert!(
+            find(&syms, "binding", "foo").is_some(),
+            "expected binding 'foo'; got {:?}",
+            names(&syms)
+        );
+        assert!(
+            find(&syms, "binding", "bar").is_some(),
+            "expected binding 'bar'; got {:?}",
+            names(&syms)
+        );
     }
 
     #[test]
     fn nix_extracts_function_binding() {
         let src = "{ add = x: y: x + y; }\n";
         let syms = nix(src);
-        assert!(find(&syms, "binding", "add").is_some(), "expected binding 'add'; got {:?}", names(&syms));
+        assert!(
+            find(&syms, "binding", "add").is_some(),
+            "expected binding 'add'; got {:?}",
+            names(&syms)
+        );
     }
 }

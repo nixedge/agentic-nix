@@ -46,8 +46,8 @@ enum Command {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let dsn = std::env::var("PG_DSN")
-        .unwrap_or_else(|_| "postgresql://127.0.0.1:5432/codebase".into());
+    let dsn =
+        std::env::var("PG_DSN").unwrap_or_else(|_| "postgresql://127.0.0.1:5432/codebase".into());
 
     match cli.command {
         None => {
@@ -80,24 +80,37 @@ async fn main() -> Result<()> {
             }
         }
 
-        Some(Command::Search { query, limit, language, kind }) => {
+        Some(Command::Search {
+            query,
+            limit,
+            language,
+            kind,
+        }) => {
             let pool = sqlx::PgPool::connect(&dsn).await?;
             let query_vec = embed::embed(&query)
                 .await
                 .map_err(|e| anyhow::anyhow!("Embedding failed (is Ollama running?): {e}"))?;
             let rows = db::hybrid_search(
-                &pool, &query, &query_vec, limit, language.as_deref(), kind.as_deref(),
+                &pool,
+                &query,
+                &query_vec,
+                limit,
+                language.as_deref(),
+                kind.as_deref(),
             )
             .await?;
             println!("{}", fmt::fmt_chunks(&rows, None, "rrf"));
         }
 
-        Some(Command::Bm25 { query, limit, language, kind }) => {
+        Some(Command::Bm25 {
+            query,
+            limit,
+            language,
+            kind,
+        }) => {
             let pool = sqlx::PgPool::connect(&dsn).await?;
-            let rows = db::bm25_search(
-                &pool, &query, limit, language.as_deref(), kind.as_deref(),
-            )
-            .await?;
+            let rows =
+                db::bm25_search(&pool, &query, limit, language.as_deref(), kind.as_deref()).await?;
             println!("{}", fmt::fmt_chunks(&rows, None, "bm25"));
         }
     }

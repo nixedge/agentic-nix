@@ -16,8 +16,7 @@ const INITIAL_BACKOFF: Duration = Duration::from_secs(2);
 /// Embed a batch of texts via Ollama /api/embed.
 /// Retries up to MAX_RETRIES times with exponential backoff on transient errors.
 pub async fn embed_batch(texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-    let host = std::env::var("OLLAMA_HOST")
-        .unwrap_or_else(|_| "http://127.0.0.1:11434".into());
+    let host = std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://127.0.0.1:11434".into());
     let model = std::env::var("EMBED_MODEL")
         .unwrap_or_else(|_| "hf.co/jinaai/jina-code-embeddings-1.5b-GGUF:Q8_0".into());
 

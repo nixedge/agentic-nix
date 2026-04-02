@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use flate2::read::GzDecoder;
 use sqlx::PgPool;
 use std::io::Cursor;
@@ -78,7 +78,10 @@ async fn download_tarball(package: &str, version: &str) -> Result<(Vec<u8>, &'st
         .await
         .context("CHaP request failed")?;
     if resp.status().is_success() {
-        let bytes = resp.bytes().await.context("Failed to read CHaP response body")?;
+        let bytes = resp
+            .bytes()
+            .await
+            .context("Failed to read CHaP response body")?;
         return Ok((bytes.to_vec(), "chap"));
     }
     let chap_status = resp.status();
@@ -92,7 +95,10 @@ async fn download_tarball(package: &str, version: &str) -> Result<(Vec<u8>, &'st
         .await
         .context("Hackage request failed")?;
     if resp.status().is_success() {
-        let bytes = resp.bytes().await.context("Failed to read Hackage response body")?;
+        let bytes = resp
+            .bytes()
+            .await
+            .context("Failed to read Hackage response body")?;
         return Ok((bytes.to_vec(), "hackage"));
     }
 
