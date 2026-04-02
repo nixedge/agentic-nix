@@ -165,6 +165,62 @@ CREATE INDEX IF NOT EXISTS github_pr_comments_hnsw
     ON github_pr_comments
     USING hnsw (embedding vector_cosine_ops);
 
+-- ── Repo index (metadata about indexed repos) ────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS repo_index (
+    repo_path    TEXT        PRIMARY KEY,
+    source_kind  TEXT        NOT NULL,   -- 'local', 'hackage', 'chap', 'crates.io', 'git'
+    package_name TEXT,                   -- for hackage / chap / crates.io
+    version      TEXT,                   -- for hackage / chap / crates.io
+    git_url      TEXT,                   -- for git repos
+    git_rev      TEXT,                   -- resolved full commit hash for git repos
+    indexed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Backfill repo_index from existing code_chunks (safe to re-run: ON CONFLICT DO NOTHING).
+INSERT INTO repo_index (repo_path, source_kind, package_name, version, git_url, git_rev, indexed_at)
+SELECT
+    repo_path,
+    CASE
+        WHEN repo_path LIKE 'hackage::%'   THEN 'hackage'
+        WHEN repo_path LIKE 'chap::%'      THEN 'chap'
+        WHEN repo_path LIKE 'crates.io::%' THEN 'crates.io'
+        WHEN repo_path LIKE 'git::%'       THEN 'git'
+        ELSE 'local'
+    END,
+    -- package_name: strip prefix, take everything before the trailing -<version>
+    CASE WHEN repo_path LIKE 'hackage::%'
+           OR repo_path LIKE 'chap::%'
+           OR repo_path LIKE 'crates.io::%'
+        THEN (regexp_match(
+                regexp_replace(repo_path, '^[^:]+::', ''),
+                '^(.*)-[0-9]'))[1]
+        ELSE NULL
+    END,
+    -- version: the trailing <digit>... after the last hyphen
+    CASE WHEN repo_path LIKE 'hackage::%'
+           OR repo_path LIKE 'chap::%'
+           OR repo_path LIKE 'crates.io::%'
+        THEN (regexp_match(
+                regexp_replace(repo_path, '^[^:]+::', ''),
+                '^.*-([0-9].*)$'))[1]
+        ELSE NULL
+    END,
+    -- git_url: strip 'git::' prefix and trailing '@<rev>'
+    CASE WHEN repo_path LIKE 'git::%'
+        THEN regexp_replace(substr(repo_path, 6), '@[^@]+$', '')
+        ELSE NULL
+    END,
+    -- git_rev: everything after the last '@'
+    CASE WHEN repo_path LIKE 'git::%'
+        THEN (regexp_match(repo_path, '@([^@]+)$'))[1]
+        ELSE NULL
+    END,
+    MAX(indexed_at)
+FROM code_chunks
+GROUP BY repo_path
+ON CONFLICT (repo_path) DO NOTHING;
+
 -- ── Sync state (watermarks for incremental GitHub sync) ───────────────────────
 
 CREATE TABLE IF NOT EXISTS sync_state (

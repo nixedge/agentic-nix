@@ -6,6 +6,7 @@ use tar::Archive;
 use tempfile::TempDir;
 
 use super::code::ingest_code;
+use super::repo_index::{upsert_repo, RepoMeta};
 
 const CHAP_BASE: &str = "https://chap.intersectmbo.org/package";
 const HACKAGE_BASE: &str = "https://hackage.haskell.org/package";
@@ -60,6 +61,19 @@ pub async fn ingest_hackage(
     };
 
     ingest_code(pool, &ingest_dir, force, &[], Some(&repo_path_str)).await?;
+
+    upsert_repo(
+        pool,
+        &repo_path_str,
+        &RepoMeta {
+            source_kind: source,
+            package_name: Some(package),
+            version: Some(version),
+            git_url: None,
+            git_rev: None,
+        },
+    )
+    .await?;
 
     // tmp is dropped here, cleaning up the extracted files.
     Ok(())

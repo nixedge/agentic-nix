@@ -57,6 +57,24 @@ index-crate package version:
 reindex-crate package version:
     cargo run --release --bin ingest -- crate "{{package}}" "{{version}}" --force
 
+# ── Git repo indexing ─────────────────────────────────────────────────────────
+
+# Clone and index a git repo at HEAD (usage: just index-git https://github.com/owner/repo)
+index-git url:
+    cargo run --release --bin ingest -- git "{{url}}"
+
+# Clone and index a git repo at a specific branch (usage: just index-git-branch <url> <branch>)
+index-git-branch url branch:
+    cargo run --release --bin ingest -- git "{{url}}" --branch "{{branch}}"
+
+# Clone and index a git repo at a specific tag (usage: just index-git-tag <url> <tag>)
+index-git-tag url tag:
+    cargo run --release --bin ingest -- git "{{url}}" --tag "{{tag}}"
+
+# Clone and index a git repo at a specific commit hash (full clone)
+index-git-rev url rev:
+    cargo run --release --bin ingest -- git "{{url}}" --rev "{{rev}}"
+
 # ── GitHub indexing ───────────────────────────────────────────────────────────
 
 # Index GitHub issues + PRs for a repo (usage: just index-github OWNER/REPO)
@@ -77,6 +95,36 @@ index-github-issues repo:
 index-github-prs repo:
     cargo run --release --bin ingest -- github "{{repo}}" --stream prs
 
+# ── Repo index ────────────────────────────────────────────────────────────────
+
+# List all indexed repos
+list:
+    cargo run --release --bin ingest -- list
+
+# List only local clone repos
+list-local:
+    cargo run --release --bin ingest -- list --local
+
+# Prune all local clone repos (shows what would be deleted first — use prune-local to actually delete)
+prune-local-dry:
+    cargo run --release --bin ingest -- prune --dry-run local
+
+# Delete all local clone repos from the index
+prune-local:
+    cargo run --release --bin ingest -- prune local
+
+# For each package, delete all but the most recently indexed version (dry run)
+prune-old-dry:
+    cargo run --release --bin ingest -- prune --dry-run old-versions
+
+# For each package, delete all but the most recently indexed version
+prune-old:
+    cargo run --release --bin ingest -- prune old-versions
+
+# Delete a specific repo from the index (usage: just prune-repo 'hackage::serialise-0.2.6.1')
+prune-repo repo:
+    cargo run --release --bin ingest -- prune repo "{{repo}}"
+
 # ── MCP server + CLI ──────────────────────────────────────────────────────────
 
 # Build both binaries
@@ -86,10 +134,6 @@ build:
 # Start the MCP server (Claude Code launches this automatically)
 mcp:
     cargo run --release --bin mcp-server
-
-# List all indexed repositories
-list-repos:
-    cargo run --release --bin mcp-server -- repos
 
 # Hybrid search over indexed code (usage: just search "query")
 search query:

@@ -35,8 +35,16 @@ const SKIP_DIRS: &[&str] = &[
     "result",
 ];
 
-pub async fn ingest_docs(pool: &PgPool, repo_path: &Path, force: bool) -> Result<()> {
-    let repo_str = repo_path.canonicalize()?.to_string_lossy().into_owned();
+pub async fn ingest_docs(
+    pool: &PgPool,
+    repo_path: &Path,
+    force: bool,
+    repo_path_override: Option<&str>,
+) -> Result<()> {
+    let repo_str = match repo_path_override {
+        Some(s) => s.to_string(),
+        None => repo_path.canonicalize()?.to_string_lossy().into_owned(),
+    };
 
     // Discover markdown files matching doc patterns
     let candidates = collect_docs(repo_path);

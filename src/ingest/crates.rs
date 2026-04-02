@@ -6,6 +6,7 @@ use tar::Archive;
 use tempfile::TempDir;
 
 use super::code::ingest_code;
+use super::repo_index::{upsert_repo, RepoMeta};
 
 const CRATES_IO_BASE: &str = "https://static.crates.io/crates";
 
@@ -75,5 +76,18 @@ pub async fn ingest_crate(pool: &PgPool, package: &str, version: &str, force: bo
     };
 
     ingest_code(pool, &ingest_dir, force, &[], Some(&repo_path_str)).await?;
+
+    upsert_repo(
+        pool,
+        &repo_path_str,
+        &RepoMeta {
+            source_kind: "crates.io",
+            package_name: Some(package),
+            version: Some(version),
+            git_url: None,
+            git_rev: None,
+        },
+    )
+    .await?;
     Ok(())
 }
