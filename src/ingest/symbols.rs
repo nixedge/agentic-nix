@@ -704,12 +704,20 @@ fn collect_nix_bindings(
                 collect_nix_bindings(&body, source, lines, syms, depth);
             }
         }
-        // `{ ... }` or `rec { ... }` — emit each binding
+        // `{ ... }` or `rec { ... }` — emit each binding.
+        // Some grammar versions wrap bindings in a `binding_set` node; handle both.
         "attrset_expression" | "rec_attrset_expression" => {
             let mut cursor = node.walk();
             for child in node.named_children(&mut cursor) {
                 if child.kind() == "binding" {
                     emit_nix_binding(&child, source, lines, syms);
+                } else if child.kind() == "binding_set" {
+                    let mut c2 = child.walk();
+                    for binding in child.named_children(&mut c2) {
+                        if binding.kind() == "binding" {
+                            emit_nix_binding(&binding, source, lines, syms);
+                        }
+                    }
                 }
             }
         }
@@ -829,7 +837,8 @@ fn group_haskell_decls(decls: &[HsDecl], lines: &[&str]) -> Vec<Symbol> {
                 }
                 i = j;
             }
-            "type_synonym" | "type_alias" => {
+            // tree-sitter-haskell spells the node kind "type_synomym" (sic).
+            "type_synonym" | "type_synomym" | "type_alias" => {
                 if let Some(name) = &d.name {
                     let doc_start = haddock_start(lines, d.start_row);
                     syms.push(Symbol {
@@ -855,17 +864,17 @@ fn group_haskell_decls(decls: &[HsDecl], lines: &[&str]) -> Vec<Symbol> {
                 }
                 i += 1;
             }
-            "class_declaration" => {
-                if let Some(name) = &d.name {
-                    let doc_start = haddock_start(lines, d.start_row);
-                    syms.push(Symbol {
-                        name: name.clone(),
-                        kind: "class".into(),
-                        content: lines_slice(lines, doc_start, d.end_row),
-                        start_line: doc_start + 1,
-                        end_line: d.end_row + 1,
-                    });
-                }
+            "class_declaration" | "class" => {
+                let name = d.name.clone()
+                    .unwrap_or_else(|| format!("class@L{}", d.start_row + 1));
+                let doc_start = haddock_start(lines, d.start_row);
+                syms.push(Symbol {
+                    name,
+                    kind: "class".into(),
+                    content: lines_slice(lines, doc_start, d.end_row),
+                    start_line: doc_start + 1,
+                    end_line: d.end_row + 1,
+                });
                 i += 1;
             }
             "instance_declaration" | "instance" => {
@@ -891,4 +900,392 @@ fn group_haskell_decls(decls: &[HsDecl], lines: &[&str]) -> Vec<Symbol> {
     }
 
     syms
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── helpers ────────────────────────────────────────────────────────────────
+
+    fn sym(lang: &str, src: &str) -> Vec<Symbol> {
+        extract_symbols(src, lang)
+    }
+    fn hs(src: &str)  -> Vec<Symbol> { sym("haskell",    src) }
+    fn rs(src: &str)  -> Vec<Symbol> { sym("rust",       src) }
+    fn py(src: &str)  -> Vec<Symbol> { sym("python",     src) }
+    fn ts(src: &str)  -> Vec<Symbol> { sym("typescript", src) }
+    fn nix(src: &str) -> Vec<Symbol> { sym("nix",        src) }
+
+    fn names(syms: &[Symbol]) -> Vec<&str> {
+        syms.iter().map(|s| s.name.as_str()).collect()
+    }
+    fn find<'a>(syms: &'a [Symbol], kind: &str, name_pat: &str) -> Option<&'a Symbol> {
+        syms.iter().find(|s| s.kind == kind && s.name.contains(name_pat))
+    }
+
+    // ── unsupported language falls back to empty (no crash) ───────────────────
+
+    #[test]
+    fn unknown_language_returns_empty() {
+        assert!(sym("cobol", "some source").is_empty());
+        assert!(sym("", "some source").is_empty());
+    }
+
+    #[test]
+    fn empty_source_returns_empty_for_all_languages() {
+        for lang in &["haskell", "rust", "python", "typescript", "nix"] {
+            assert!(sym(lang, "").is_empty(), "language {lang} should return empty for empty source");
+        }
+    }
+
+    // ── helpers: rust_doc_start / haddock_start ────────────────────────────────
+
+    #[test]
+    fn rust_doc_start_includes_doc_comments() {
+        let lines = vec!["", "/// Does a thing", "#[inline]", "fn foo() {}"];
+        assert_eq!(rust_doc_start(&lines, 3), 1); // starts at the doc comment
+    }
+
+    #[test]
+    fn rust_doc_start_stops_at_non_doc_line() {
+        let lines = vec!["let x = 1;", "/// comment", "fn foo() {}"];
+        assert_eq!(rust_doc_start(&lines, 2), 1);
+    }
+
+    #[test]
+    fn haddock_start_includes_haddock_comments() {
+        let lines = vec!["", "-- | docs", "-- more", "instance Foo Bar where"];
+        assert_eq!(haddock_start(&lines, 3), 1);
+    }
+
+    #[test]
+    fn haddock_start_stops_at_non_comment() {
+        let lines = vec!["x = 1", "-- | docs", "foo = bar"];
+        assert_eq!(haddock_start(&lines, 2), 1);
+    }
+
+    // ══ Haskell ════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn hs_extracts_top_level_function() {
+        let src = "module Foo where\n\nfoo :: Int -> Int\nfoo x = x + 1\n";
+        let syms = hs(src);
+        assert!(names(&syms).contains(&"foo"), "expected 'foo'; got {:?}", names(&syms));
+    }
+
+    #[test]
+    fn hs_extracts_instance_declaration() {
+        let src = "module Foo where\n\ninstance Show () where\n    show _ = \"()\"\n";
+        let syms = hs(src);
+        let inst = syms.iter().find(|s| s.kind == "impl" && s.content.contains("Show ()"));
+        assert!(inst.is_some(), "expected impl chunk for 'instance Show ()'; got {:?}", names(&syms));
+    }
+
+    #[test]
+    fn hs_extracts_class_declaration() {
+        let src = "module Foo where\n\nclass MyClass a where\n    method :: a -> String\n";
+        let syms = hs(src);
+        let cls = syms.iter().find(|s| s.kind == "class");
+        assert!(cls.is_some(), "expected a class chunk; got {:?}", names(&syms));
+        assert!(cls.unwrap().name.contains("MyClass"));
+    }
+
+    #[test]
+    fn hs_extracts_data_type() {
+        let src = "module Foo where\n\ndata Color = Red | Green | Blue\n";
+        let syms = hs(src);
+        assert!(find(&syms, "struct", "Color").is_some(), "expected struct 'Color'; got {:?}", names(&syms));
+    }
+
+    #[test]
+    fn hs_extracts_newtype() {
+        let src = "module Foo where\n\nnewtype Wrapper a = Wrapper { unwrap :: a }\n";
+        let syms = hs(src);
+        assert!(find(&syms, "struct", "Wrapper").is_some(), "expected struct 'Wrapper'; got {:?}", names(&syms));
+    }
+
+    #[test]
+    fn hs_extracts_type_alias() {
+        let src = "module Foo where\n\ntype Name = String\n";
+        let syms = hs(src);
+        assert!(find(&syms, "type", "Name").is_some(), "expected type 'Name'; got {:?}", names(&syms));
+    }
+
+    #[test]
+    fn hs_signature_and_body_are_grouped() {
+        let src = "module Foo where\n\nbar :: Int -> Int\nbar x = x * 2\n";
+        let syms = hs(src);
+        let bars: Vec<_> = syms.iter().filter(|s| s.name == "bar").collect();
+        assert_eq!(bars.len(), 1, "signature and body should merge into one symbol");
+        assert!(bars[0].content.contains("bar :: Int -> Int"));
+        assert!(bars[0].content.contains("bar x = x * 2"));
+    }
+
+    #[test]
+    fn hs_multiequation_function_grouped() {
+        let src = "module Foo where\n\nf :: Bool -> Int\nf True  = 1\nf False = 0\n";
+        let syms = hs(src);
+        let fs: Vec<_> = syms.iter().filter(|s| s.name == "f").collect();
+        assert_eq!(fs.len(), 1, "multi-equation function should be one symbol");
+        assert!(fs[0].content.contains("f True"));
+        assert!(fs[0].content.contains("f False"));
+    }
+
+    #[test]
+    fn hs_haddock_comment_included_in_content() {
+        let src = "module Foo where\n\n-- | Adds one.\nadd1 :: Int -> Int\nadd1 x = x + 1\n";
+        let syms = hs(src);
+        let s = syms.iter().find(|s| s.name == "add1").expect("expected 'add1'");
+        assert!(s.content.contains("-- | Adds one."), "haddock comment should be in content");
+    }
+
+    #[test]
+    fn hs_line_numbers_are_1_indexed() {
+        let src = "module Foo where\n\nfoo :: Int\nfoo = 42\n";
+        let syms = hs(src);
+        let foo = syms.iter().find(|s| s.name == "foo").expect("expected 'foo'");
+        assert!(foo.start_line >= 1);
+        assert!(foo.end_line >= foo.start_line);
+    }
+
+    #[test]
+    fn hs_instance_without_name_gets_fallback() {
+        // Instances always get a name (possibly auto-generated) and are never silently dropped.
+        let src = "module Foo where\n\ninstance Show () where\n    show _ = \"()\"\n";
+        let syms = hs(src);
+        assert!(syms.iter().any(|s| s.kind == "impl"), "expected at least one impl chunk");
+    }
+
+    // ── CPP ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn hs_cpp_wrapped_instance_is_not_dropped() {
+        let src = r#"module Foo where
+
+#if MIN_VERSION_base(4,10,0)
+instance Show Foo where
+    show _ = "new"
+#else
+instance Show Foo where
+    show _ = "old"
+#endif
+"#;
+        let syms = hs(src);
+        let inst = syms.iter().find(|s| s.kind == "impl" && s.content.contains("Show Foo"));
+        assert!(inst.is_some(), "instance inside #if block was silently dropped; got {:?}", names(&syms));
+    }
+
+    #[test]
+    fn hs_cpp_nested_blocks_are_handled() {
+        let src = r#"module Foo where
+
+#if COND_A
+#if COND_B
+instance Show A where
+    show _ = "A"
+#endif
+#endif
+"#;
+        let syms = hs(src);
+        let inst = syms.iter().find(|s| s.kind == "impl" && s.content.contains("Show A"));
+        assert!(inst.is_some(), "instance inside nested #if blocks was dropped; got {:?}", names(&syms));
+    }
+
+    #[test]
+    fn hs_cpp_function_outside_block_still_extracted() {
+        // Declarations outside CPP blocks must not be affected by the recursion change.
+        let src = r#"module Foo where
+
+plain :: Int
+plain = 1
+
+#if SOME_FLAG
+flagged :: Int
+flagged = 2
+#endif
+"#;
+        let syms = hs(src);
+        assert!(names(&syms).contains(&"plain"), "non-CPP function missing; got {:?}", names(&syms));
+    }
+
+    // ══ Rust ══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn rs_extracts_function() {
+        let src = "fn add(a: i32, b: i32) -> i32 { a + b }\n";
+        let syms = rs(src);
+        assert!(find(&syms, "function", "add").is_some(), "expected fn 'add'; got {:?}", names(&syms));
+    }
+
+    #[test]
+    fn rs_extracts_struct() {
+        let src = "struct Point { x: f64, y: f64 }\n";
+        let syms = rs(src);
+        assert!(find(&syms, "struct", "Point").is_some(), "expected struct 'Point'; got {:?}", names(&syms));
+    }
+
+    #[test]
+    fn rs_extracts_enum() {
+        let src = "enum Direction { North, South, East, West }\n";
+        let syms = rs(src);
+        assert!(find(&syms, "enum", "Direction").is_some(), "expected enum 'Direction'; got {:?}", names(&syms));
+    }
+
+    #[test]
+    fn rs_extracts_trait() {
+        let src = "trait Animal { fn speak(&self) -> &str; }\n";
+        let syms = rs(src);
+        assert!(find(&syms, "trait", "Animal").is_some(), "expected trait 'Animal'; got {:?}", names(&syms));
+    }
+
+    #[test]
+    fn rs_extracts_type_alias() {
+        let src = "type Meters = f64;\n";
+        let syms = rs(src);
+        assert!(find(&syms, "type", "Meters").is_some(), "expected type 'Meters'; got {:?}", names(&syms));
+    }
+
+    #[test]
+    fn rs_extracts_const() {
+        let src = "const MAX: usize = 100;\n";
+        let syms = rs(src);
+        assert!(find(&syms, "const", "MAX").is_some(), "expected const 'MAX'; got {:?}", names(&syms));
+    }
+
+    #[test]
+    fn rs_impl_methods_are_qualified() {
+        let src = "struct Foo;\nimpl Foo {\n    fn bar(&self) {}\n}\n";
+        let syms = rs(src);
+        assert!(
+            find(&syms, "function", "Foo::bar").is_some(),
+            "expected 'Foo::bar'; got {:?}", names(&syms)
+        );
+    }
+
+    #[test]
+    fn rs_doc_comment_included_in_content() {
+        let src = "/// Computes something.\nfn compute() -> i32 { 42 }\n";
+        let syms = rs(src);
+        let s = syms.iter().find(|s| s.name == "compute").expect("expected 'compute'");
+        assert!(s.content.contains("/// Computes something."));
+    }
+
+    #[test]
+    fn rs_inline_mod_items_extracted() {
+        let src = "mod inner {\n    pub fn helper() {}\n}\n";
+        let syms = rs(src);
+        assert!(
+            find(&syms, "function", "helper").is_some(),
+            "fn inside inline mod should be extracted; got {:?}", names(&syms)
+        );
+    }
+
+    // ══ Python ════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn py_extracts_function() {
+        let src = "def greet(name):\n    return 'Hello ' + name\n";
+        let syms = py(src);
+        assert!(find(&syms, "function", "greet").is_some(), "expected fn 'greet'; got {:?}", names(&syms));
+    }
+
+    #[test]
+    fn py_extracts_class() {
+        let src = "class Animal:\n    def speak(self):\n        pass\n";
+        let syms = py(src);
+        assert!(find(&syms, "class", "Animal").is_some(), "expected class 'Animal'; got {:?}", names(&syms));
+    }
+
+    #[test]
+    fn py_decorated_function_extracted() {
+        let src = "@staticmethod\ndef util():\n    pass\n";
+        let syms = py(src);
+        assert!(
+            find(&syms, "function", "util").is_some(),
+            "decorated function should be extracted; got {:?}", names(&syms)
+        );
+    }
+
+    #[test]
+    fn py_decorated_class_extracted() {
+        let src = "@dataclass\nclass Point:\n    x: float\n    y: float\n";
+        let syms = py(src);
+        assert!(
+            find(&syms, "class", "Point").is_some(),
+            "decorated class should be extracted; got {:?}", names(&syms)
+        );
+    }
+
+    // ══ TypeScript ════════════════════════════════════════════════════════════
+
+    #[test]
+    fn ts_extracts_function() {
+        let src = "function greet(name: string): string { return 'hi ' + name; }\n";
+        let syms = ts(src);
+        assert!(find(&syms, "function", "greet").is_some(), "expected fn 'greet'; got {:?}", names(&syms));
+    }
+
+    #[test]
+    fn ts_extracts_class() {
+        let src = "class Dog {\n  bark() { console.log('woof'); }\n}\n";
+        let syms = ts(src);
+        assert!(find(&syms, "class", "Dog").is_some(), "expected class 'Dog'; got {:?}", names(&syms));
+    }
+
+    #[test]
+    fn ts_extracts_interface() {
+        let src = "interface Shape { area(): number; }\n";
+        let syms = ts(src);
+        assert!(find(&syms, "interface", "Shape").is_some(), "expected interface 'Shape'; got {:?}", names(&syms));
+    }
+
+    #[test]
+    fn ts_extracts_type_alias() {
+        let src = "type Id = string | number;\n";
+        let syms = ts(src);
+        assert!(find(&syms, "type", "Id").is_some(), "expected type 'Id'; got {:?}", names(&syms));
+    }
+
+    #[test]
+    fn ts_extracts_enum() {
+        let src = "enum Color { Red, Green, Blue }\n";
+        let syms = ts(src);
+        assert!(find(&syms, "enum", "Color").is_some(), "expected enum 'Color'; got {:?}", names(&syms));
+    }
+
+    #[test]
+    fn ts_exported_function_extracted() {
+        let src = "export function foo(): void {}\n";
+        let syms = ts(src);
+        assert!(find(&syms, "function", "foo").is_some(), "exported fn should be extracted; got {:?}", names(&syms));
+    }
+
+    #[test]
+    fn ts_const_arrow_extracted() {
+        let src = "const handler = (x: number) => x * 2;\n";
+        let syms = ts(src);
+        assert!(
+            find(&syms, "function", "handler").is_some(),
+            "const arrow fn should be extracted; got {:?}", names(&syms)
+        );
+    }
+
+    // ══ Nix ═══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn nix_extracts_top_level_attr() {
+        let src = "{ foo = 42; bar = \"hello\"; }\n";
+        let syms = nix(src);
+        // Nix bindings are emitted with kind "binding".
+        assert!(find(&syms, "binding", "foo").is_some(), "expected binding 'foo'; got {:?}", names(&syms));
+        assert!(find(&syms, "binding", "bar").is_some(), "expected binding 'bar'; got {:?}", names(&syms));
+    }
+
+    #[test]
+    fn nix_extracts_function_binding() {
+        let src = "{ add = x: y: x + y; }\n";
+        let syms = nix(src);
+        assert!(find(&syms, "binding", "add").is_some(), "expected binding 'add'; got {:?}", names(&syms));
+    }
 }

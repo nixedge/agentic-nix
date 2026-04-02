@@ -459,3 +459,106 @@ fn sha256_hex(s: &str) -> String {
     h.update(s.as_bytes());
     hex::encode(h.finalize())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── chunk_lines ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn chunk_lines_empty() {
+        assert!(chunk_lines("").is_empty());
+    }
+
+    #[test]
+    fn chunk_lines_short_file() {
+        let src = "line1\nline2\nline3\n";
+        let chunks = chunk_lines(src);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].start_line, 1);
+        assert_eq!(chunks[0].end_line, 3);
+        assert!(chunks[0].content.contains("line1"));
+        assert!(chunks[0].content.contains("line3"));
+    }
+
+    #[test]
+    fn chunk_lines_respects_cap() {
+        // Build a file with more lines than MAX_CHUNKS_PER_FILE * CHUNK_LINES
+        // so we would exceed the cap if it weren't enforced.
+        let line = "x = 1\n";
+        let n = MAX_CHUNKS_PER_FILE * CHUNK_LINES + 200;
+        let src = line.repeat(n);
+        let chunks = chunk_lines(&src);
+        assert!(
+            chunks.len() <= MAX_CHUNKS_PER_FILE,
+            "got {} chunks, expected <= {}",
+            chunks.len(),
+            MAX_CHUNKS_PER_FILE
+        );
+    }
+
+    #[test]
+    fn chunk_lines_overlap_means_consecutive_chunks_share_lines() {
+        let lines: Vec<String> = (1..=300).map(|i| format!("line{i}")).collect();
+        let src = lines.join("\n");
+        let chunks = chunk_lines(&src);
+        assert!(chunks.len() >= 2, "expected multiple chunks");
+        // The end of chunk 0 should be >= the start of chunk 1 (overlap).
+        assert!(
+            chunks[0].end_line >= chunks[1].start_line,
+            "no overlap between chunk 0 (end {}) and chunk 1 (start {})",
+            chunks[0].end_line,
+            chunks[1].start_line
+        );
+    }
+
+    // ── make_chunks ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn make_chunks_unknown_language_falls_back_to_lines() {
+        let src = "hello\nworld\n";
+        let chunks = make_chunks(src, "cobol");
+        assert!(!chunks.is_empty());
+        assert!(chunks[0].symbol_kind.is_none());
+    }
+
+    #[test]
+    fn make_chunks_haskell_extracts_instances() {
+        let src = r#"module Foo where
+
+data Color = Red | Green | Blue
+
+instance Show Color where
+    show Red   = "Red"
+    show Green = "Green"
+    show Blue  = "Blue"
+"#;
+        let chunks = make_chunks(src, "haskell");
+        let has_instance = chunks
+            .iter()
+            .any(|c| c.symbol_kind.as_deref() == Some("impl") && c.content.contains("Show Color"));
+        assert!(has_instance, "expected an impl chunk for 'instance Show Color'");
+    }
+
+    #[test]
+    fn make_chunks_haskell_cpp_instance_is_extracted() {
+        // An instance declaration wrapped in a CPP conditional block should not
+        // be silently dropped by the Haskell symbol extractor.
+        let src = r#"module Foo where
+
+#if MIN_VERSION_base(4,10,0)
+instance Show Foo where
+    show _ = "Foo (new)"
+#else
+instance Show Foo where
+    show _ = "Foo (old)"
+#endif
+"#;
+        let chunks = make_chunks(src, "haskell");
+        let has_instance = chunks
+            .iter()
+            .any(|c| c.symbol_kind.as_deref() == Some("impl") && c.content.contains("Show Foo"));
+        assert!(has_instance, "instance inside CPP block was silently dropped");
+    }
+}
