@@ -42,10 +42,11 @@ pub async fn hybrid_search(
     limit: i32,
     language: Option<&str>,
     symbol_kind: Option<&str>,
+    repo_path: Option<&str>,
 ) -> Result<Vec<ChunkRow>> {
     let vec_str = vec_literal(query_vec);
     // Over-fetch when filtering so we have enough after the WHERE clause prunes results
-    let candidates = if language.is_some() || symbol_kind.is_some() {
+    let candidates = if language.is_some() || symbol_kind.is_some() || repo_path.is_some() {
         (limit * 3).max(20)
     } else {
         limit
@@ -58,14 +59,16 @@ pub async fn hybrid_search(
          JOIN code_chunks c USING (id)
          WHERE ($4 IS NULL OR h.language = $4)
            AND ($5 IS NULL OR c.symbol_kind = $5)
+           AND ($6 IS NULL OR h.repo_path LIKE $6)
          ORDER BY h.rrf_score DESC
-         LIMIT $6",
+         LIMIT $7",
     )
     .bind(query_text)
     .bind(&vec_str)
     .bind(candidates)
     .bind(language)
     .bind(symbol_kind)
+    .bind(repo_path)
     .bind(limit)
     .fetch_all(pool)
     .await?;
@@ -108,14 +111,14 @@ pub async fn bm25_search(
     limit: i32,
     language: Option<&str>,
     symbol_kind: Option<&str>,
+    repo_path: Option<&str>,
 ) -> Result<Vec<ChunkRow>> {
     let query = sanitize_bm25_query(query);
     let query = query.trim();
 
     // Build SQL dynamically: ParadeDB raises "Unsupported query shape" when @@@ is
     // combined with conditional predicates like `($n IS NULL OR col = $n)` even
-    // when the parameter is NULL.  Only append language/symbol_kind clauses when
-    // the caller actually supplies a value.
+    // when the parameter is NULL.  Only append clauses when the caller supplies a value.
     let mut sql =
         "SELECT repo_path, file_path, start_line, end_line, content, language, symbol_kind,
                           paradedb.score(id)::float8 AS rrf_score
@@ -132,6 +135,10 @@ pub async fn bm25_search(
         sql.push_str(&format!(" AND symbol_kind = ${next_param}"));
         next_param += 1;
     }
+    if repo_path.is_some() {
+        sql.push_str(&format!(" AND repo_path LIKE ${next_param}"));
+        next_param += 1;
+    }
     let _ = next_param; // silence unused warning
     sql.push_str(" ORDER BY paradedb.score(id) DESC LIMIT $2");
 
@@ -143,6 +150,11 @@ pub async fn bm25_search(
     };
     let q = if let Some(kind) = symbol_kind {
         q.bind(kind)
+    } else {
+        q
+    };
+    let q = if let Some(rp) = repo_path {
+        q.bind(rp)
     } else {
         q
     };

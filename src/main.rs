@@ -29,6 +29,9 @@ enum Command {
         language: Option<String>,
         #[arg(long)]
         kind: Option<String>,
+        /// Filter by repo path (supports LIKE patterns, e.g. 'hackage::%')
+        #[arg(long)]
+        repo: Option<String>,
     },
     /// BM25-only search over indexed code (best for exact identifiers)
     Bm25 {
@@ -39,6 +42,9 @@ enum Command {
         language: Option<String>,
         #[arg(long)]
         kind: Option<String>,
+        /// Filter by repo path (supports LIKE patterns, e.g. 'hackage::%')
+        #[arg(long)]
+        repo: Option<String>,
     },
 }
 
@@ -85,6 +91,7 @@ async fn main() -> Result<()> {
             limit,
             language,
             kind,
+            repo,
         }) => {
             let pool = sqlx::PgPool::connect(&dsn).await?;
             let query_vec = embed::embed(&query)
@@ -97,6 +104,7 @@ async fn main() -> Result<()> {
                 limit,
                 language.as_deref(),
                 kind.as_deref(),
+                repo.as_deref(),
             )
             .await?;
             println!("{}", fmt::fmt_chunks(&rows, None, "rrf"));
@@ -107,10 +115,18 @@ async fn main() -> Result<()> {
             limit,
             language,
             kind,
+            repo,
         }) => {
             let pool = sqlx::PgPool::connect(&dsn).await?;
-            let rows =
-                db::bm25_search(&pool, &query, limit, language.as_deref(), kind.as_deref()).await?;
+            let rows = db::bm25_search(
+                &pool,
+                &query,
+                limit,
+                language.as_deref(),
+                kind.as_deref(),
+                repo.as_deref(),
+            )
+            .await?;
             println!("{}", fmt::fmt_chunks(&rows, None, "bm25"));
         }
     }

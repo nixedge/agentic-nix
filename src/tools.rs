@@ -33,6 +33,13 @@ pub struct SearchCodeParams {
     )]
     #[serde(default)]
     pub symbol_kind: Option<String>,
+    #[schemars(
+        description = "Filter by repository. Supports SQL LIKE patterns: use an exact repo_path \
+                       from list_repos, or a prefix pattern like 'hackage::%' to match all \
+                       Hackage packages, 'chap::%' for CHaP, etc."
+    )]
+    #[serde(default)]
+    pub repo_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -120,6 +127,7 @@ impl CodeSearchServer {
             limit,
             language,
             symbol_kind,
+            repo_path,
         } = params;
 
         let query_vec = match embed::embed(&query).await {
@@ -142,9 +150,10 @@ impl CodeSearchServer {
 
         let lang_ref = language.as_deref();
         let kind_ref = symbol_kind.as_deref();
+        let repo_ref = repo_path.as_deref();
 
         let rows = match db::hybrid_search(
-            &self.pool, &query, &query_vec, candidates, lang_ref, kind_ref,
+            &self.pool, &query, &query_vec, candidates, lang_ref, kind_ref, repo_ref,
         )
         .await
         {
@@ -194,6 +203,7 @@ impl CodeSearchServer {
             limit,
             language,
             symbol_kind,
+            repo_path,
         } = params;
 
         let rows = match db::bm25_search(
@@ -202,6 +212,7 @@ impl CodeSearchServer {
             limit,
             language.as_deref(),
             symbol_kind.as_deref(),
+            repo_path.as_deref(),
         )
         .await
         {
