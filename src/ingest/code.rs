@@ -4,11 +4,13 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::path::Path;
+use tokio::task::JoinSet;
 
 use super::embed::{embed_batch, vec_literal};
 use super::symbols::extract_symbols;
 
 const EMBED_BATCH: usize = 16;
+const MAX_CONCURRENT_FLUSHES: usize = 4;
 const CHUNK_LINES: usize = 120;
 const OVERLAP_LINES: usize = 15;
 const MAX_CHUNK_BYTES: usize = 8_000;
@@ -111,7 +113,8 @@ pub async fn ingest_code(
             .progress_chars("=>-"),
     );
 
-    let mut pending: Vec<ChunkRecord> = vec![];
+    let mut pending: Vec<ChunkRecord> = Vec::with_capacity(EMBED_BATCH);
+    let mut tasks: JoinSet<Result<usize>> = JoinSet::new();
     let mut total_chunks = 0usize;
     let mut skipped_files = 0usize;
     let mut incremental_skips = 0usize;
@@ -200,12 +203,28 @@ pub async fn ingest_code(
                 file_mtime,
             });
             if pending.len() >= EMBED_BATCH {
-                flush(&mut pending, pool, &mut total_chunks).await?;
+                // Throttle: wait for one task before spawning another if at capacity.
+                if tasks.len() >= MAX_CONCURRENT_FLUSHES {
+                    if let Some(res) = tasks.join_next().await {
+                        total_chunks += res??;
+                    }
+                }
+                let batch = std::mem::replace(&mut pending, Vec::with_capacity(EMBED_BATCH));
+                let pool2 = pool.clone();
+                tasks.spawn(async move { flush_bulk(batch, pool2).await });
             }
         }
         bar.inc(1);
     }
-    flush(&mut pending, pool, &mut total_chunks).await?;
+
+    // Flush remainder then drain all in-flight tasks.
+    if !pending.is_empty() {
+        let pool2 = pool.clone();
+        tasks.spawn(async move { flush_bulk(pending, pool2).await });
+    }
+    while let Some(res) = tasks.join_next().await {
+        total_chunks += res??;
+    }
     bar.finish_and_clear();
 
     eprintln!(
@@ -423,47 +442,67 @@ fn chunk_lines(source: &str) -> Vec<Chunk> {
 
 // ── Flush batch to DB ─────────────────────────────────────────────────────────
 
-async fn flush(pending: &mut Vec<ChunkRecord>, pool: &PgPool, total: &mut usize) -> Result<()> {
-    if pending.is_empty() {
-        return Ok(());
+/// Embed a batch of chunks and write them to the DB in a single bulk INSERT … UNNEST(…).
+/// Returns the number of rows upserted.
+async fn flush_bulk(records: Vec<ChunkRecord>, pool: PgPool) -> Result<usize> {
+    if records.is_empty() {
+        return Ok(0);
     }
-    let texts: Vec<&str> = pending.iter().map(|c| c.content.as_str()).collect();
+
+    let texts: Vec<&str> = records.iter().map(|r| r.content.as_str()).collect();
     let embeddings = embed_batch(&texts).await?;
 
-    for (rec, emb) in pending.iter().zip(embeddings.iter()) {
-        sqlx::query(
-            "INSERT INTO code_chunks
-                 (repo_path, file_path, chunk_index, content,
-                  start_line, end_line, language, symbol_kind, content_hash, file_mtime, embedding)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::vector)
-             ON CONFLICT (repo_path, file_path, chunk_index) DO UPDATE
-                 SET content      = EXCLUDED.content,
-                     language     = EXCLUDED.language,
-                     symbol_kind  = EXCLUDED.symbol_kind,
-                     content_hash = EXCLUDED.content_hash,
-                     file_mtime   = EXCLUDED.file_mtime,
-                     embedding    = EXCLUDED.embedding,
-                     indexed_at   = NOW()",
-        )
-        .bind(&rec.repo_path)
-        .bind(&rec.file_path)
-        .bind(rec.chunk_index)
-        .bind(&rec.content)
-        .bind(rec.start_line)
-        .bind(rec.end_line)
-        .bind(&rec.language)
-        .bind(&rec.symbol_kind)
-        .bind(&rec.content_hash)
-        .bind(rec.file_mtime)
-        .bind(vec_literal(emb))
-        .execute(pool)
-        .await?;
-    }
+    // Build typed arrays for UNNEST — one allocation per column, one round-trip total.
+    let repo_paths:    Vec<&str>          = records.iter().map(|r| r.repo_path.as_str()).collect();
+    let file_paths:    Vec<&str>          = records.iter().map(|r| r.file_path.as_str()).collect();
+    let indices:       Vec<i32>           = records.iter().map(|r| r.chunk_index).collect();
+    let contents:      Vec<&str>          = records.iter().map(|r| r.content.as_str()).collect();
+    let start_lines:   Vec<i32>           = records.iter().map(|r| r.start_line).collect();
+    let end_lines:     Vec<i32>           = records.iter().map(|r| r.end_line).collect();
+    let languages:     Vec<&str>          = records.iter().map(|r| r.language.as_str()).collect();
+    let symbol_kinds:  Vec<Option<&str>>  = records.iter().map(|r| r.symbol_kind.as_deref()).collect();
+    let hashes:        Vec<&str>          = records.iter().map(|r| r.content_hash.as_str()).collect();
+    let mtimes:        Vec<Option<i64>>   = records.iter().map(|r| r.file_mtime).collect();
+    let vecs:          Vec<String>        = embeddings.iter().map(|e| vec_literal(e)).collect();
 
-    *total += pending.len();
-    pending.clear();
-    Ok(())
+    let n = records.len();
+
+    sqlx::query(
+        "INSERT INTO code_chunks
+             (repo_path, file_path, chunk_index, content,
+              start_line, end_line, language, symbol_kind,
+              content_hash, file_mtime, embedding)
+         SELECT
+             UNNEST($1::text[]),  UNNEST($2::text[]),  UNNEST($3::int4[]),
+             UNNEST($4::text[]),  UNNEST($5::int4[]),  UNNEST($6::int4[]),
+             UNNEST($7::text[]),  UNNEST($8::text[]),  UNNEST($9::text[]),
+             UNNEST($10::int8[]), UNNEST($11::text[])::vector
+         ON CONFLICT (repo_path, file_path, chunk_index) DO UPDATE SET
+             content      = EXCLUDED.content,
+             language     = EXCLUDED.language,
+             symbol_kind  = EXCLUDED.symbol_kind,
+             content_hash = EXCLUDED.content_hash,
+             file_mtime   = EXCLUDED.file_mtime,
+             embedding    = EXCLUDED.embedding,
+             indexed_at   = NOW()",
+    )
+    .bind(repo_paths)
+    .bind(file_paths)
+    .bind(indices)
+    .bind(contents)
+    .bind(start_lines)
+    .bind(end_lines)
+    .bind(languages)
+    .bind(symbol_kinds)
+    .bind(hashes)
+    .bind(mtimes)
+    .bind(vecs)
+    .execute(&pool)
+    .await?;
+
+    Ok(n)
 }
+
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
