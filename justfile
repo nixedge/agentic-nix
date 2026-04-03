@@ -10,7 +10,7 @@ dev:
 
 # Apply schema to a running database (safe to run on existing DBs)
 migrate:
-    psql postgres://127.0.0.1:5432/codebase -f scripts/schema.sql
+    psql "${PG_DSN:-postgres://127.0.0.1:5432/codebase}" -f scripts/schema.sql
 
 # ── Code + doc indexing ───────────────────────────────────────────────────────
 
@@ -147,11 +147,11 @@ bm25 query:
 
 # Connect to the database
 psql:
-    psql postgres://127.0.0.1:5432/codebase
+    psql "${PG_DSN:-postgres://127.0.0.1:5432/codebase}"
 
 # Show indexed content counts across all tables
 stats:
-    psql postgres://127.0.0.1:5432/codebase -c \
+    psql "${PG_DSN:-postgres://127.0.0.1:5432/codebase}" -c \
       "SELECT 'code_chunks'         AS entity, COUNT(*) FROM code_chunks \
        UNION ALL \
        SELECT 'documents',                     COUNT(*) FROM documents \
@@ -167,6 +167,6 @@ stats:
 
 # Show sync state watermarks
 sync-status:
-    psql postgres://127.0.0.1:5432/codebase -c \
+    psql "${PG_DSN:-postgres://127.0.0.1:5432/codebase}" -c \
       "SELECT source_name, scope_key, last_synced_at, watermark, error_count, last_error \
        FROM sync_state ORDER BY updated_at DESC;"
