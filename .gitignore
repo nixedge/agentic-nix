@@ -21,5 +21,8 @@ data/
 # Direnv
 .envrc.local
 
+# Local environment overrides (machine-specific, not committed)
+.env
+
 # Claude
 .claude/settings.local.json
