@@ -5,6 +5,7 @@ use sqlx::PgPool;
 use std::io::Cursor;
 use tar::Archive;
 use tempfile::TempDir;
+use zip::ZipArchive;
 
 use super::code::ingest_code;
 use super::repo_index::{upsert_repo, RepoMeta};
@@ -61,11 +62,14 @@ pub async fn ingest_pypi(pool: &PgPool, package: &str, version: &str, force: boo
         .await
         .context("Failed to parse PyPI metadata JSON")?;
 
-    // Prefer sdist (source distribution) — it contains the actual Python source.
+    // Prefer sdist (.tar.gz) — it has the full source tree including tests/docs.
+    // Fall back to a wheel (.whl) if no sdist is published (pure-Python wheels
+    // are zip archives containing the .py files directly).
     let dist = meta
         .urls
         .iter()
         .find(|u| u.packagetype == "sdist")
+        .or_else(|| meta.urls.iter().find(|u| u.filename.ends_with(".whl")))
         .or_else(|| meta.urls.first())
         .with_context(|| format!("No distributions found for {pkg_ver} on PyPI"))?;
 
@@ -85,31 +89,39 @@ pub async fn ingest_pypi(pool: &PgPool, package: &str, version: &str, force: boo
 
     let tmp = TempDir::new().context("Failed to create temp directory")?;
 
-    if dist.filename.ends_with(".tar.gz") {
+    let ingest_dir = if dist.filename.ends_with(".tar.gz") {
         let gz = GzDecoder::new(Cursor::new(bytes.as_ref()));
         let mut archive = Archive::new(gz);
         archive
             .unpack(tmp.path())
             .context("Failed to extract PyPI tarball")?;
+
+        // Sdists extract to a single top-level {name}-{version}/ directory.
+        let expected = tmp.path().join(&pkg_ver);
+        if expected.is_dir() {
+            expected
+        } else {
+            std::fs::read_dir(tmp.path())
+                .context("Failed to read temp directory")?
+                .filter_map(|e| e.ok())
+                .find(|e| e.path().is_dir())
+                .map(|e| e.path())
+                .unwrap_or_else(|| tmp.path().to_path_buf())
+        }
+    } else if dist.filename.ends_with(".whl") {
+        // Wheels are zip archives. Files land at the top level of the zip
+        // (the package directory is inside, not under a {name}-{version}/ wrapper).
+        let mut zip = ZipArchive::new(Cursor::new(bytes.as_ref()))
+            .context("Failed to open wheel zip archive")?;
+        zip.extract(tmp.path())
+            .context("Failed to extract wheel")?;
+        // Index the whole temp dir — it contains the package tree directly.
+        tmp.path().to_path_buf()
     } else {
         bail!(
-            "Unsupported archive format '{}'. Only .tar.gz sdists are supported.",
+            "Unsupported archive format '{}'. Expected .tar.gz or .whl.",
             dist.filename
         );
-    }
-
-    // Source distributions extract to a single top-level {name}-{version}/ directory.
-    let expected = tmp.path().join(&pkg_ver);
-    let ingest_dir = if expected.is_dir() {
-        expected
-    } else {
-        // Some packages use a slightly different top-level directory name.
-        std::fs::read_dir(tmp.path())
-            .context("Failed to read temp directory")?
-            .filter_map(|e| e.ok())
-            .find(|e| e.path().is_dir())
-            .map(|e| e.path())
-            .unwrap_or_else(|| tmp.path().to_path_buf())
     };
 
     ingest_code(pool, &ingest_dir, force, &[], Some(&repo_path_str)).await?;
