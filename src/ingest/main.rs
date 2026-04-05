@@ -6,6 +6,7 @@ mod git;
 mod github;
 mod hackage;
 mod prune;
+mod pypi;
 mod repo_index;
 mod symbols;
 
@@ -76,6 +77,16 @@ enum Commands {
         /// Crate name (e.g. serde, tokio)
         package: String,
         /// Crate version (e.g. 1.0.0)
+        version: String,
+        /// Re-index even if already present
+        #[arg(long)]
+        force: bool,
+    },
+    /// Fetch a Python package from PyPI and index it
+    Pypi {
+        /// Package name (e.g. requests, numpy)
+        package: String,
+        /// Package version (e.g. 2.31.0)
         version: String,
         /// Re-index even if already present
         #[arg(long)]
@@ -193,6 +204,13 @@ async fn main() -> Result<()> {
             force,
         } => {
             crates::ingest_crate(&pool, &package, &version, force).await?;
+        }
+        Commands::Pypi {
+            package,
+            version,
+            force,
+        } => {
+            pypi::ingest_pypi(&pool, &package, &version, force).await?;
         }
         Commands::Git {
             url,

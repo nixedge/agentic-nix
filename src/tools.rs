@@ -6,7 +6,7 @@ use rmcp::{
 use serde::Deserialize;
 use sqlx::PgPool;
 
-use mcp_server::ingest::{crates::ingest_crate, hackage::ingest_hackage};
+use mcp_server::ingest::{crates::ingest_crate, hackage::ingest_hackage, pypi::ingest_pypi};
 
 use crate::{db, embed, fmt, rerank};
 
@@ -89,7 +89,7 @@ pub struct FetchPackageParams {
     #[schemars(description = "Package version (e.g. '0.2.6.1', '1.0.0')")]
     pub version: String,
     #[schemars(
-        description = "Package ecosystem: 'haskell' (CHaP/Hackage, default) or 'rust' (crates.io)"
+        description = "Package ecosystem: 'haskell' (CHaP/Hackage, default), 'rust' (crates.io), or 'python' (PyPI)"
     )]
     #[serde(default = "default_ecosystem")]
     pub ecosystem: String,
@@ -359,11 +359,12 @@ impl CodeSearchServer {
     // ── fetch_package ─────────────────────────────────────────────────────────
 
     #[tool(
-        description = "Fetch a package from crates.io (Rust) or CHaP/Hackage (Haskell) and index \
-                       it for code search. Returns immediately if already indexed. Use this when \
+        description = "Fetch a package from crates.io (Rust), CHaP/Hackage (Haskell), or PyPI (Python) \
+                       and index it for code search. Returns immediately if already indexed. Use this when \
                        you need source-level detail about a library that isn't in the current index. \
                        Set ecosystem='rust' for Rust crates, ecosystem='haskell' (default) for \
-                       Haskell packages (checks CHaP first, falls back to Hackage)."
+                       Haskell packages (checks CHaP first, falls back to Hackage), or \
+                       ecosystem='python' for Python packages from PyPI."
     )]
     async fn fetch_package(
         &self,
@@ -378,6 +379,7 @@ impl CodeSearchServer {
 
         let (subcommand, repo_path_keys): (&str, Vec<String>) = match ecosystem.as_str() {
             "rust" => ("crate", vec![format!("crates.io::{pkg_ver}")]),
+            "python" => ("pypi", vec![format!("pypi::{pkg_ver}")]),
             _ => (
                 "hackage",
                 vec![format!("chap::{pkg_ver}"), format!("hackage::{pkg_ver}")],
@@ -405,12 +407,13 @@ impl CodeSearchServer {
             }
         };
 
+        let language = match ecosystem.as_str() {
+            "rust" => "rust",
+            "python" => "python",
+            _ => "haskell",
+        };
+
         if existing > 0 {
-            let language = if ecosystem == "rust" {
-                "rust"
-            } else {
-                "haskell"
-            };
             return Ok(CallToolResult::success(vec![Content::text(format!(
                 "Already indexed: {pkg_ver} ({existing} chunks).\n\
                  Use search_code with language={language} to query it."
@@ -421,6 +424,7 @@ impl CodeSearchServer {
         let result = match subcommand {
             "hackage" => ingest_hackage(&self.pool, &package, &version, false).await,
             "crate" => ingest_crate(&self.pool, &package, &version, false).await,
+            "pypi" => ingest_pypi(&self.pool, &package, &version, false).await,
             _ => Err(anyhow::anyhow!("unknown ecosystem: {ecosystem}")),
         };
 
@@ -444,11 +448,6 @@ impl CodeSearchServer {
             query.fetch_one(&self.pool).await.unwrap_or(0)
         };
 
-        let language = if ecosystem == "rust" {
-            "rust"
-        } else {
-            "haskell"
-        };
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Indexed {pkg_ver} from {ecosystem}: {chunks} chunks.\n\
              Use search_code with language={language} to query it."
@@ -554,14 +553,13 @@ impl ServerHandler for CodeSearchServer {
                  - fetch_package: download and index a Haskell package from CHaP or Hackage on demand\n\
                  \n\
                  IMPORTANT — external packages:\n\
-                 When you need source-level detail about a Haskell or Rust library (types, functions, \
-                 instances, module structure), call fetch_package FIRST before attempting to read \
-                 files from /nix/store or searching the filesystem. fetch_package downloads and \
-                 indexes the package so subsequent search_code calls can find it. It is a no-op if \
-                 already indexed.\n\
+                 When you need source-level detail about a library that isn't in the current index, \
+                 call fetch_package FIRST. It downloads and indexes the package so subsequent \
+                 search_code calls can find it. It is a no-op if already indexed.\n\
                  - Haskell: fetch_package({\"package\": \"serialise\", \"version\": \"0.2.6.1\", \"ecosystem\": \"haskell\"})\n\
                  - Rust: fetch_package({\"package\": \"tokio\", \"version\": \"1.0.0\", \"ecosystem\": \"rust\"})\n\
-                 Then use search_code with language=haskell or language=rust to query the indexed source."
+                 - Python: fetch_package({\"package\": \"requests\", \"version\": \"2.31.0\", \"ecosystem\": \"python\"})\n\
+                 Then use search_code with language=haskell, language=rust, or language=python to query the indexed source."
                     .to_string(),
             ),
             ..Default::default()

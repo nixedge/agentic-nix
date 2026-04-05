@@ -228,12 +228,19 @@ fn visit_py_node(
                 let start = node.start_position().row;
                 let end = node.end_position().row;
                 syms.push(Symbol {
-                    name,
+                    name: name.clone(),
                     kind: "class".into(),
                     content: lines_slice(lines, start, end),
                     start_line: start + 1,
                     end_line: end + 1,
                 });
+                // Recurse into the class body to extract methods as separate symbols.
+                if let Some(body) = node.child_by_field_name("body") {
+                    let mut cursor = body.walk();
+                    for child in body.named_children(&mut cursor) {
+                        visit_py_method(&child, &name, source, lines, syms);
+                    }
+                }
             }
         }
         "decorated_definition" => {
@@ -244,14 +251,72 @@ fn visit_py_node(
                     if let Some(name) = node_name(&child, source) {
                         let start = node.start_position().row; // include decorators
                         let end = node.end_position().row;
-                        let kind = if child.kind() == "class_definition" {
-                            "class"
+                        if child.kind() == "class_definition" {
+                            syms.push(Symbol {
+                                name: name.clone(),
+                                kind: "class".into(),
+                                content: lines_slice(lines, start, end),
+                                start_line: start + 1,
+                                end_line: end + 1,
+                            });
+                            // Also extract methods from a decorated class body.
+                            if let Some(body) = child.child_by_field_name("body") {
+                                let mut bcursor = body.walk();
+                                for bchild in body.named_children(&mut bcursor) {
+                                    visit_py_method(&bchild, &name, source, lines, syms);
+                                }
+                            }
                         } else {
-                            "function"
-                        };
+                            syms.push(Symbol {
+                                name,
+                                kind: "function".into(),
+                                content: lines_slice(lines, start, end),
+                                start_line: start + 1,
+                                end_line: end + 1,
+                            });
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Extract a single method (or decorated method) from a class body, qualifying
+/// its name as `ClassName.method_name`.
+fn visit_py_method(
+    node: &tree_sitter::Node<'_>,
+    class_name: &str,
+    source: &[u8],
+    lines: &[&str],
+    syms: &mut Vec<Symbol>,
+) {
+    match node.kind() {
+        "function_definition" => {
+            if let Some(method_name) = node_name(node, source) {
+                let start = node.start_position().row;
+                let end = node.end_position().row;
+                syms.push(Symbol {
+                    name: format!("{class_name}.{method_name}"),
+                    kind: "method".into(),
+                    content: lines_slice(lines, start, end),
+                    start_line: start + 1,
+                    end_line: end + 1,
+                });
+            }
+        }
+        "decorated_definition" => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if child.kind() == "function_definition" {
+                    if let Some(method_name) = node_name(&child, source) {
+                        let start = node.start_position().row; // include decorators
+                        let end = node.end_position().row;
                         syms.push(Symbol {
-                            name,
-                            kind: kind.into(),
+                            name: format!("{class_name}.{method_name}"),
+                            kind: "method".into(),
                             content: lines_slice(lines, start, end),
                             start_line: start + 1,
                             end_line: end + 1,
@@ -1353,6 +1418,51 @@ flagged = 2
         assert!(
             find(&syms, "class", "Point").is_some(),
             "decorated class should be extracted; got {:?}",
+            names(&syms)
+        );
+    }
+
+    #[test]
+    fn py_extracts_class_methods() {
+        let src = "class Animal:\n    def speak(self):\n        pass\n    def move(self):\n        pass\n";
+        let syms = py(src);
+        assert!(
+            find(&syms, "method", "Animal.speak").is_some(),
+            "expected method 'Animal.speak'; got {:?}",
+            names(&syms)
+        );
+        assert!(
+            find(&syms, "method", "Animal.move").is_some(),
+            "expected method 'Animal.move'; got {:?}",
+            names(&syms)
+        );
+    }
+
+    #[test]
+    fn py_extracts_decorated_method() {
+        let src = "class MyClass:\n    @staticmethod\n    def helper():\n        pass\n";
+        let syms = py(src);
+        assert!(
+            find(&syms, "method", "MyClass.helper").is_some(),
+            "expected decorated method 'MyClass.helper'; got {:?}",
+            names(&syms)
+        );
+    }
+
+    #[test]
+    fn py_class_and_methods_both_emitted() {
+        let src = "class Foo:\n    def bar(self):\n        pass\n";
+        let syms = py(src);
+        // The class itself should be emitted as "class"
+        assert!(
+            find(&syms, "class", "Foo").is_some(),
+            "expected class 'Foo'; got {:?}",
+            names(&syms)
+        );
+        // And the method as "method"
+        assert!(
+            find(&syms, "method", "Foo.bar").is_some(),
+            "expected method 'Foo.bar'; got {:?}",
             names(&syms)
         );
     }
