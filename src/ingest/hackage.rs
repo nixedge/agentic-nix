@@ -16,6 +16,7 @@ pub async fn ingest_hackage(
     package: &str,
     version: &str,
     force: bool,
+    project: Option<&str>,
 ) -> Result<()> {
     let pkg_ver = format!("{package}-{version}");
 
@@ -60,7 +61,7 @@ pub async fn ingest_hackage(
             .unwrap_or_else(|| tmp.path().to_path_buf())
     };
 
-    ingest_code(pool, &ingest_dir, force, &[], Some(&repo_path_str)).await?;
+    ingest_code(pool, &ingest_dir, force, &[], Some(&repo_path_str), project).await?;
 
     upsert_repo(
         pool,
@@ -71,6 +72,7 @@ pub async fn ingest_hackage(
             version: Some(version),
             git_url: None,
             git_rev: None,
+            project,
         },
     )
     .await?;

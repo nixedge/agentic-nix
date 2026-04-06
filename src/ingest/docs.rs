@@ -40,6 +40,7 @@ pub async fn ingest_docs(
     repo_path: &Path,
     force: bool,
     repo_path_override: Option<&str>,
+    project: Option<&str>,
 ) -> Result<()> {
     let repo_str = match repo_path_override {
         Some(s) => s.to_string(),
@@ -203,6 +204,7 @@ pub async fn ingest_docs(
                 preview: preview.to_string(),
                 content_hash: file_hash.clone(),
                 file_mtime,
+                project: project.map(|s| s.to_string()),
             });
             if pending.len() >= EMBED_BATCH {
                 flush_docs(&mut pending, pool, &mut total_chunks).await?;
@@ -232,6 +234,7 @@ struct DocRecord {
     preview: String,
     content_hash: String,
     file_mtime: Option<i64>,
+    project: Option<String>,
 }
 
 struct MarkdownChunk {
@@ -388,11 +391,12 @@ async fn flush_docs(pending: &mut Vec<DocRecord>, pool: &PgPool, total: &mut usi
     let embeddings = embed_batch(&texts).await?;
 
     for (rec, emb) in pending.iter().zip(embeddings.iter()) {
+        let project_arr: Option<Vec<String>> = rec.project.as_ref().map(|p| vec![p.clone()]);
         sqlx::query(
             "INSERT INTO documents
                  (repo_path, source_path, chunk_index, doc_kind, title,
-                  content, preview, content_hash, file_mtime, embedding)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector)
+                  content, preview, content_hash, file_mtime, embedding, project)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector, $11::text[])
              ON CONFLICT (repo_path, source_path, chunk_index) DO UPDATE
                  SET doc_kind     = EXCLUDED.doc_kind,
                      title        = EXCLUDED.title,
@@ -401,6 +405,9 @@ async fn flush_docs(pending: &mut Vec<DocRecord>, pool: &PgPool, total: &mut usi
                      content_hash = EXCLUDED.content_hash,
                      file_mtime   = EXCLUDED.file_mtime,
                      embedding    = EXCLUDED.embedding,
+                     project      = (SELECT array_agg(DISTINCT p)
+                                     FROM unnest(coalesce(documents.project, '{}'::text[])
+                                              || coalesce(EXCLUDED.project, '{}'::text[])) p),
                      indexed_at   = NOW()",
         )
         .bind(&rec.repo_path)
@@ -413,6 +420,7 @@ async fn flush_docs(pending: &mut Vec<DocRecord>, pool: &PgPool, total: &mut usi
         .bind(&rec.content_hash)
         .bind(rec.file_mtime)
         .bind(vec_literal(emb))
+        .bind(project_arr)
         .execute(pool)
         .await?;
     }

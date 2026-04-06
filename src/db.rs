@@ -43,13 +43,19 @@ pub async fn hybrid_search(
     language: Option<&str>,
     symbol_kind: Option<&str>,
     repo_path: Option<&str>,
+    projects: &[String],
 ) -> Result<Vec<ChunkRow>> {
     let vec_str = vec_literal(query_vec);
     // Over-fetch when filtering so we have enough after the WHERE clause prunes results
-    let candidates = if language.is_some() || symbol_kind.is_some() || repo_path.is_some() {
+    let candidates = if language.is_some() || symbol_kind.is_some() || repo_path.is_some() || !projects.is_empty() {
         (limit * 3).max(20)
     } else {
         limit
+    };
+    let projects_filter: Option<Vec<String>> = if projects.is_empty() {
+        None
+    } else {
+        Some(projects.to_vec())
     };
 
     let rows = sqlx::query(
@@ -60,8 +66,9 @@ pub async fn hybrid_search(
          WHERE ($4 IS NULL OR h.language = $4)
            AND ($5 IS NULL OR c.symbol_kind = $5)
            AND ($6 IS NULL OR h.repo_path LIKE $6)
+           AND ($7::text[] IS NULL OR c.project && $7::text[])
          ORDER BY h.rrf_score DESC
-         LIMIT $7",
+         LIMIT $8",
     )
     .bind(query_text)
     .bind(&vec_str)
@@ -69,6 +76,7 @@ pub async fn hybrid_search(
     .bind(language)
     .bind(symbol_kind)
     .bind(repo_path)
+    .bind(projects_filter)
     .bind(limit)
     .fetch_all(pool)
     .await?;
@@ -112,6 +120,7 @@ pub async fn bm25_search(
     language: Option<&str>,
     symbol_kind: Option<&str>,
     repo_path: Option<&str>,
+    projects: &[String],
 ) -> Result<Vec<ChunkRow>> {
     let query = sanitize_bm25_query(query);
     let query = query.trim();
@@ -139,6 +148,10 @@ pub async fn bm25_search(
         sql.push_str(&format!(" AND repo_path LIKE ${next_param}"));
         next_param += 1;
     }
+    if !projects.is_empty() {
+        sql.push_str(&format!(" AND project && ${next_param}::text[]"));
+        next_param += 1;
+    }
     let _ = next_param; // silence unused warning
     sql.push_str(" ORDER BY paradedb.score(id) DESC LIMIT $2");
 
@@ -155,6 +168,11 @@ pub async fn bm25_search(
     };
     let q = if let Some(rp) = repo_path {
         q.bind(rp)
+    } else {
+        q
+    };
+    let q = if !projects.is_empty() {
+        q.bind(projects.to_vec())
     } else {
         q
     };
@@ -176,16 +194,23 @@ pub async fn bm25_search(
         .collect())
 }
 
-pub async fn list_repos(pool: &PgPool) -> Result<Vec<RepoSummary>> {
+pub async fn list_repos(pool: &PgPool, projects: &[String]) -> Result<Vec<RepoSummary>> {
+    let projects_filter: Option<Vec<String>> = if projects.is_empty() {
+        None
+    } else {
+        Some(projects.to_vec())
+    };
     let rows = sqlx::query(
         "SELECT repo_path,
                 COUNT(*)                  AS chunks,
                 COUNT(DISTINCT file_path) AS files,
                 MAX(indexed_at)::TEXT     AS last_indexed
          FROM   code_chunks
+         WHERE  ($1::text[] IS NULL OR project && $1::text[])
          GROUP  BY repo_path
          ORDER  BY MAX(indexed_at) DESC",
     )
+    .bind(projects_filter)
     .fetch_all(pool)
     .await?;
 
@@ -206,15 +231,23 @@ pub async fn get_file_chunks(
     pool: &PgPool,
     repo_path: &str,
     file_path: &str,
+    projects: &[String],
 ) -> Result<Vec<ChunkRow>> {
+    let projects_filter: Option<Vec<String>> = if projects.is_empty() {
+        None
+    } else {
+        Some(projects.to_vec())
+    };
     let rows = sqlx::query(
         "SELECT repo_path, file_path, start_line, end_line, content, language, symbol_kind
          FROM   code_chunks
          WHERE  repo_path = $1 AND file_path = $2
+           AND ($3::text[] IS NULL OR project && $3::text[])
          ORDER  BY chunk_index",
     )
     .bind(repo_path)
     .bind(file_path)
+    .bind(projects_filter)
     .fetch_all(pool)
     .await?;
 
@@ -251,9 +284,15 @@ pub async fn search_docs_hybrid(
     query_vec: &[f32],
     limit: i32,
     doc_kind: Option<&str>,
+    projects: &[String],
 ) -> Result<Vec<DocRow>> {
     let vec_str = vec_literal(query_vec);
     let candidates = (limit * 3).max(20);
+    let projects_filter: Option<Vec<String>> = if projects.is_empty() {
+        None
+    } else {
+        Some(projects.to_vec())
+    };
 
     let rows = sqlx::query(
         "WITH bm25_ranked AS (
@@ -261,6 +300,7 @@ pub async fn search_docs_hybrid(
              FROM documents
              WHERE id @@@ paradedb.match('content', $1)
                AND ($3 IS NULL OR doc_kind = $3)
+               AND ($5::text[] IS NULL OR project && $5::text[])
              LIMIT 60
          ),
          bm25_with_rank AS (
@@ -272,6 +312,7 @@ pub async fn search_docs_hybrid(
              FROM documents
              WHERE embedding IS NOT NULL
                AND ($3 IS NULL OR doc_kind = $3)
+               AND ($5::text[] IS NULL OR project && $5::text[])
              ORDER BY embedding <=> $2::vector
              LIMIT 60
          ),
@@ -292,6 +333,7 @@ pub async fn search_docs_hybrid(
     .bind(&vec_str)
     .bind(doc_kind)
     .bind(candidates)
+    .bind(projects_filter)
     .fetch_all(pool)
     .await?;
 

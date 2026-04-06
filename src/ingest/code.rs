@@ -42,6 +42,7 @@ pub async fn ingest_code(
     force: bool,
     extra_patterns: &[String],
     repo_path_override: Option<&str>,
+    project: Option<&str>,
 ) -> Result<()> {
     let repo_str = match repo_path_override {
         Some(s) => s.to_string(),
@@ -201,6 +202,7 @@ pub async fn ingest_code(
                 symbol_kind: chunk.symbol_kind,
                 content_hash: file_hash.clone(),
                 file_mtime,
+                project: project.map(|s| s.to_string()),
             });
             if pending.len() >= EMBED_BATCH {
                 // Throttle: wait for one task before spawning another if at capacity.
@@ -255,6 +257,7 @@ struct ChunkRecord {
     symbol_kind: Option<String>,
     content_hash: String,
     file_mtime: Option<i64>,
+    project: Option<String>,
 }
 
 // ── File collection ───────────────────────────────────────────────────────────
@@ -453,17 +456,23 @@ async fn flush_bulk(records: Vec<ChunkRecord>, pool: PgPool) -> Result<usize> {
     let embeddings = embed_batch(&texts).await?;
 
     // Build typed arrays for UNNEST — one allocation per column, one round-trip total.
-    let repo_paths:    Vec<&str>          = records.iter().map(|r| r.repo_path.as_str()).collect();
-    let file_paths:    Vec<&str>          = records.iter().map(|r| r.file_path.as_str()).collect();
-    let indices:       Vec<i32>           = records.iter().map(|r| r.chunk_index).collect();
-    let contents:      Vec<&str>          = records.iter().map(|r| r.content.as_str()).collect();
-    let start_lines:   Vec<i32>           = records.iter().map(|r| r.start_line).collect();
-    let end_lines:     Vec<i32>           = records.iter().map(|r| r.end_line).collect();
-    let languages:     Vec<&str>          = records.iter().map(|r| r.language.as_str()).collect();
-    let symbol_kinds:  Vec<Option<&str>>  = records.iter().map(|r| r.symbol_kind.as_deref()).collect();
-    let hashes:        Vec<&str>          = records.iter().map(|r| r.content_hash.as_str()).collect();
-    let mtimes:        Vec<Option<i64>>   = records.iter().map(|r| r.file_mtime).collect();
-    let vecs:          Vec<String>        = embeddings.iter().map(|e| vec_literal(e)).collect();
+    let repo_paths:   Vec<&str>          = records.iter().map(|r| r.repo_path.as_str()).collect();
+    let file_paths:   Vec<&str>          = records.iter().map(|r| r.file_path.as_str()).collect();
+    let indices:      Vec<i32>           = records.iter().map(|r| r.chunk_index).collect();
+    let contents:     Vec<&str>          = records.iter().map(|r| r.content.as_str()).collect();
+    let start_lines:  Vec<i32>           = records.iter().map(|r| r.start_line).collect();
+    let end_lines:    Vec<i32>           = records.iter().map(|r| r.end_line).collect();
+    let languages:    Vec<&str>          = records.iter().map(|r| r.language.as_str()).collect();
+    let symbol_kinds: Vec<Option<&str>>  = records.iter().map(|r| r.symbol_kind.as_deref()).collect();
+    let hashes:       Vec<&str>          = records.iter().map(|r| r.content_hash.as_str()).collect();
+    let mtimes:       Vec<Option<i64>>   = records.iter().map(|r| r.file_mtime).collect();
+    let vecs:         Vec<String>        = embeddings.iter().map(|e| vec_literal(e)).collect();
+    // All chunks in a batch share the same project (one ingest call = one project).
+    // Pass as a scalar TEXT[] so ON CONFLICT can merge it into the existing array.
+    let project: Option<Vec<String>> = records
+        .first()
+        .and_then(|r| r.project.as_deref())
+        .map(|p| vec![p.to_string()]);
 
     let n = records.len();
 
@@ -471,12 +480,12 @@ async fn flush_bulk(records: Vec<ChunkRecord>, pool: PgPool) -> Result<usize> {
         "INSERT INTO code_chunks
              (repo_path, file_path, chunk_index, content,
               start_line, end_line, language, symbol_kind,
-              content_hash, file_mtime, embedding)
+              content_hash, file_mtime, embedding, project)
          SELECT
              UNNEST($1::text[]),  UNNEST($2::text[]),  UNNEST($3::int4[]),
              UNNEST($4::text[]),  UNNEST($5::int4[]),  UNNEST($6::int4[]),
              UNNEST($7::text[]),  UNNEST($8::text[]),  UNNEST($9::text[]),
-             UNNEST($10::int8[]), UNNEST($11::text[])::vector
+             UNNEST($10::int8[]), UNNEST($11::text[])::vector, $12::text[]
          ON CONFLICT (repo_path, file_path, chunk_index) DO UPDATE SET
              content      = EXCLUDED.content,
              language     = EXCLUDED.language,
@@ -484,6 +493,9 @@ async fn flush_bulk(records: Vec<ChunkRecord>, pool: PgPool) -> Result<usize> {
              content_hash = EXCLUDED.content_hash,
              file_mtime   = EXCLUDED.file_mtime,
              embedding    = EXCLUDED.embedding,
+             project      = (SELECT array_agg(DISTINCT p)
+                             FROM unnest(coalesce(code_chunks.project, '{}'::text[])
+                                      || coalesce(EXCLUDED.project, '{}'::text[])) p),
              indexed_at   = NOW()",
     )
     .bind(repo_paths)
@@ -497,6 +509,7 @@ async fn flush_bulk(records: Vec<ChunkRecord>, pool: PgPool) -> Result<usize> {
     .bind(hashes)
     .bind(mtimes)
     .bind(vecs)
+    .bind(project)
     .execute(&pool)
     .await?;
 

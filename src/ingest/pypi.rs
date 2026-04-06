@@ -24,7 +24,13 @@ struct PypiUrl {
     filename: String,
 }
 
-pub async fn ingest_pypi(pool: &PgPool, package: &str, version: &str, force: bool) -> Result<()> {
+pub async fn ingest_pypi(
+    pool: &PgPool,
+    package: &str,
+    version: &str,
+    force: bool,
+    project: Option<&str>,
+) -> Result<()> {
     let pkg_ver = format!("{package}-{version}");
     let repo_path_str = format!("pypi::{pkg_ver}");
 
@@ -124,7 +130,7 @@ pub async fn ingest_pypi(pool: &PgPool, package: &str, version: &str, force: boo
         );
     };
 
-    ingest_code(pool, &ingest_dir, force, &[], Some(&repo_path_str)).await?;
+    ingest_code(pool, &ingest_dir, force, &[], Some(&repo_path_str), project).await?;
 
     upsert_repo(
         pool,
@@ -135,6 +141,7 @@ pub async fn ingest_pypi(pool: &PgPool, package: &str, version: &str, force: boo
             version: Some(version),
             git_url: None,
             git_rev: None,
+            project,
         },
     )
     .await?;

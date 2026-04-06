@@ -10,7 +10,13 @@ use super::repo_index::{upsert_repo, RepoMeta};
 
 const CRATES_IO_BASE: &str = "https://static.crates.io/crates";
 
-pub async fn ingest_crate(pool: &PgPool, package: &str, version: &str, force: bool) -> Result<()> {
+pub async fn ingest_crate(
+    pool: &PgPool,
+    package: &str,
+    version: &str,
+    force: bool,
+    project: Option<&str>,
+) -> Result<()> {
     let pkg_ver = format!("{package}-{version}");
     let repo_path_str = format!("crates.io::{pkg_ver}");
 
@@ -75,7 +81,7 @@ pub async fn ingest_crate(pool: &PgPool, package: &str, version: &str, force: bo
             .unwrap_or_else(|| tmp.path().to_path_buf())
     };
 
-    ingest_code(pool, &ingest_dir, force, &[], Some(&repo_path_str)).await?;
+    ingest_code(pool, &ingest_dir, force, &[], Some(&repo_path_str), project).await?;
 
     upsert_repo(
         pool,
@@ -86,6 +92,7 @@ pub async fn ingest_crate(pool: &PgPool, package: &str, version: &str, force: bo
             version: Some(version),
             git_url: None,
             git_rev: None,
+            project,
         },
     )
     .await?;

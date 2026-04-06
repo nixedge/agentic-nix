@@ -235,6 +235,45 @@ CREATE TABLE IF NOT EXISTS sync_state (
     UNIQUE (source_name, scope_key)
 );
 
+-- ── Project isolation (added later; safe to re-run) ──────────────────────────
+-- Ensures project is TEXT[] on all tables.  Handles three cases per table:
+--   • column absent  → add as TEXT[]
+--   • column is TEXT → convert to TEXT[] (old single-project migration)
+--   • column is already TEXT[] → no-op
+DO $migration$
+DECLARE col_type text;
+BEGIN
+    -- code_chunks
+    SELECT data_type INTO col_type FROM information_schema.columns
+    WHERE table_name = 'code_chunks' AND column_name = 'project';
+    IF col_type IS NULL THEN
+        ALTER TABLE code_chunks ADD COLUMN project TEXT[];
+    ELSIF col_type = 'text' THEN
+        ALTER TABLE code_chunks ALTER COLUMN project TYPE TEXT[]
+            USING CASE WHEN project IS NULL THEN NULL ELSE ARRAY[project] END;
+    END IF;
+
+    -- documents
+    SELECT data_type INTO col_type FROM information_schema.columns
+    WHERE table_name = 'documents' AND column_name = 'project';
+    IF col_type IS NULL THEN
+        ALTER TABLE documents ADD COLUMN project TEXT[];
+    ELSIF col_type = 'text' THEN
+        ALTER TABLE documents ALTER COLUMN project TYPE TEXT[]
+            USING CASE WHEN project IS NULL THEN NULL ELSE ARRAY[project] END;
+    END IF;
+
+    -- repo_index
+    SELECT data_type INTO col_type FROM information_schema.columns
+    WHERE table_name = 'repo_index' AND column_name = 'project';
+    IF col_type IS NULL THEN
+        ALTER TABLE repo_index ADD COLUMN project TEXT[];
+    ELSIF col_type = 'text' THEN
+        ALTER TABLE repo_index ALTER COLUMN project TYPE TEXT[]
+            USING CASE WHEN project IS NULL THEN NULL ELSE ARRAY[project] END;
+    END IF;
+END $migration$;
+
 -- ── Hybrid search function (BM25 + vector RRF) ────────────────────────────────
 -- Drop old signature if it exists (signature changes require DROP + recreate).
 DROP FUNCTION IF EXISTS hybrid_search(TEXT, VECTOR, INTEGER);

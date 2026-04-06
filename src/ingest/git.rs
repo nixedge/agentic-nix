@@ -36,6 +36,7 @@ pub async fn ingest_git(
     tag: Option<&str>,
     force: bool,
     no_docs: bool,
+    project: Option<&str>,
 ) -> Result<()> {
     let tmp = TempDir::new().context("Failed to create temp directory")?;
     let tmp_str = tmp.path().to_str().expect("tempdir path is not valid UTF-8");
@@ -79,9 +80,9 @@ pub async fn ingest_git(
         }
     }
 
-    ingest_code(pool, tmp.path(), force, &[], Some(&repo_path_str)).await?;
+    ingest_code(pool, tmp.path(), force, &[], Some(&repo_path_str), project).await?;
     if !no_docs {
-        ingest_docs(pool, tmp.path(), force, Some(&repo_path_str)).await?;
+        ingest_docs(pool, tmp.path(), force, Some(&repo_path_str), project).await?;
     }
 
     upsert_repo(
@@ -93,6 +94,7 @@ pub async fn ingest_git(
             version: None,
             git_url: Some(url),
             git_rev: Some(&resolved_rev),
+            project,
         },
     )
     .await?;

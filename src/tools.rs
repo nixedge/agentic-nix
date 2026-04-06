@@ -104,12 +104,19 @@ fn default_ecosystem() -> String {
 #[derive(Clone)]
 pub struct CodeSearchServer {
     pool: PgPool,
+    projects: Vec<String>,
 }
 
 #[tool(tool_box)]
 impl CodeSearchServer {
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        let projects = std::env::var("PROJECTS")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        Self { pool, projects }
     }
 
     // ── search_code ───────────────────────────────────────────────────────────
@@ -153,7 +160,7 @@ impl CodeSearchServer {
         let repo_ref = repo_path.as_deref();
 
         let rows = match db::hybrid_search(
-            &self.pool, &query, &query_vec, candidates, lang_ref, kind_ref, repo_ref,
+            &self.pool, &query, &query_vec, candidates, lang_ref, kind_ref, repo_ref, &self.projects,
         )
         .await
         {
@@ -213,6 +220,7 @@ impl CodeSearchServer {
             language.as_deref(),
             symbol_kind.as_deref(),
             repo_path.as_deref(),
+            &self.projects,
         )
         .await
         {
@@ -260,6 +268,7 @@ impl CodeSearchServer {
             &query_vec,
             limit,
             doc_kind.as_deref(),
+            &self.projects,
         )
         .await
         {
@@ -331,7 +340,7 @@ impl CodeSearchServer {
 
     #[tool(description = "List all indexed repositories with chunk and file counts.")]
     async fn list_repos(&self) -> Result<CallToolResult, McpError> {
-        let repos = match db::list_repos(&self.pool).await {
+        let repos = match db::list_repos(&self.pool, &self.projects).await {
             Ok(r) => r,
             Err(e) => {
                 return Ok(CallToolResult::success(vec![Content::text(format!(
@@ -386,16 +395,38 @@ impl CodeSearchServer {
             ),
         };
 
-        // Check if already indexed.
-        let existing: i64 = {
-            let mut q = "SELECT COUNT(*) FROM code_chunks WHERE ".to_string();
-            let placeholders: Vec<String> = (1..=repo_path_keys.len())
-                .map(|i| format!("repo_path = ${i}"))
-                .collect();
-            q.push_str(&placeholders.join(" OR "));
+        let language = match ecosystem.as_str() {
+            "rust" => "rust",
+            "python" => "python",
+            _ => "haskell",
+        };
+
+        // Build a query that checks whether the package is already indexed
+        // AND visible in the current project scope.
+        //
+        // When PROJECTS is set we only skip ingest if the package is already
+        // tagged with the current project — otherwise we run ingest anyway so
+        // the ON CONFLICT handler merges the new project into the existing array.
+        let visible: i64 = {
+            let n = repo_path_keys.len();
+            let repo_clauses: Vec<String> = (1..=n).map(|i| format!("repo_path = ${i}")).collect();
+            let project_param = n + 1;
+            let project_clause = if self.projects.is_empty() {
+                String::new() // no scope filter — any existing chunk counts
+            } else {
+                format!(" AND project && ${project_param}::text[]")
+            };
+            let q = format!(
+                "SELECT COUNT(*) FROM code_chunks WHERE ({}){}",
+                repo_clauses.join(" OR "),
+                project_clause
+            );
             let mut query = sqlx::query_scalar(&q);
             for key in &repo_path_keys {
                 query = query.bind(key);
+            }
+            if !self.projects.is_empty() {
+                query = query.bind(self.projects.clone());
             }
             match query.fetch_one(&self.pool).await {
                 Ok(n) => n,
@@ -407,24 +438,34 @@ impl CodeSearchServer {
             }
         };
 
-        let language = match ecosystem.as_str() {
-            "rust" => "rust",
-            "python" => "python",
-            _ => "haskell",
-        };
-
-        if existing > 0 {
+        if visible > 0 {
             return Ok(CallToolResult::success(vec![Content::text(format!(
-                "Already indexed: {pkg_ver} ({existing} chunks).\n\
+                "Already indexed: {pkg_ver} ({visible} chunks).\n\
                  Use search_code with language={language} to query it."
             ))]));
         }
 
+        // Check whether the package exists at all (unscoped) before we ingest.
+        // If it does, ingest will just add the new project to existing chunks.
+        let pre_existing: i64 = {
+            let placeholders: Vec<String> = (1..=repo_path_keys.len())
+                .map(|i| format!("repo_path = ${i}"))
+                .collect();
+            let q = format!("SELECT COUNT(*) FROM code_chunks WHERE {}", placeholders.join(" OR "));
+            let mut query = sqlx::query_scalar(&q);
+            for key in &repo_path_keys {
+                query = query.bind(key);
+            }
+            query.fetch_one(&self.pool).await.unwrap_or(0)
+        };
+
         // Call the ingest functions directly (no subprocess).
+        // Tag newly indexed packages with the first configured project (if any).
+        let ingest_project = self.projects.first().map(String::as_str);
         let result = match subcommand {
-            "hackage" => ingest_hackage(&self.pool, &package, &version, false).await,
-            "crate" => ingest_crate(&self.pool, &package, &version, false).await,
-            "pypi" => ingest_pypi(&self.pool, &package, &version, false).await,
+            "hackage" => ingest_hackage(&self.pool, &package, &version, false, ingest_project).await,
+            "crate" => ingest_crate(&self.pool, &package, &version, false, ingest_project).await,
+            "pypi" => ingest_pypi(&self.pool, &package, &version, false, ingest_project).await,
             _ => Err(anyhow::anyhow!("unknown ecosystem: {ecosystem}")),
         };
 
@@ -434,13 +475,12 @@ impl CodeSearchServer {
             ))]));
         }
 
-        // Query final chunk count.
+        // Query final visible chunk count.
         let chunks: i64 = {
-            let mut q = "SELECT COUNT(*) FROM code_chunks WHERE ".to_string();
             let placeholders: Vec<String> = (1..=repo_path_keys.len())
                 .map(|i| format!("repo_path = ${i}"))
                 .collect();
-            q.push_str(&placeholders.join(" OR "));
+            let q = format!("SELECT COUNT(*) FROM code_chunks WHERE {}", placeholders.join(" OR "));
             let mut query = sqlx::query_scalar(&q);
             for key in &repo_path_keys {
                 query = query.bind(key);
@@ -448,10 +488,20 @@ impl CodeSearchServer {
             query.fetch_one(&self.pool).await.unwrap_or(0)
         };
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Indexed {pkg_ver} from {ecosystem}: {chunks} chunks.\n\
-             Use search_code with language={language} to query it."
-        ))]))
+        let msg = if pre_existing > 0 && ingest_project.is_some() {
+            // Package existed under a different scope — project array was extended.
+            let proj = ingest_project.unwrap();
+            format!(
+                "Added {pkg_ver} to project '{proj}': {chunks} chunks now visible.\n\
+                 Use search_code with language={language} to query it."
+            )
+        } else {
+            format!(
+                "Indexed {pkg_ver} from {ecosystem}: {chunks} chunks.\n\
+                 Use search_code with language={language} to query it."
+            )
+        };
+        Ok(CallToolResult::success(vec![Content::text(msg)]))
     }
 
     // ── get_file ──────────────────────────────────────────────────────────────
@@ -470,7 +520,7 @@ impl CodeSearchServer {
             file_path,
         } = params;
 
-        let rows = match db::get_file_chunks(&self.pool, &repo_path, &file_path).await {
+        let rows = match db::get_file_chunks(&self.pool, &repo_path, &file_path, &self.projects).await {
             Ok(r) => r,
             Err(e) => {
                 return Ok(CallToolResult::success(vec![Content::text(format!(
@@ -540,28 +590,38 @@ impl ServerHandler for CodeSearchServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             capabilities: ServerCapabilities::builder().enable_tools().build(),
-            instructions: Some(
-                "Hybrid BM25+vector code search with optional cross-encoder reranking.\n\
-                 \n\
-                 Tools:\n\
-                 - search_code: hybrid search over indexed code (language, symbol_kind filters)\n\
-                 - bm25_search: BM25-only, best for exact identifiers and symbols\n\
-                 - search_docs: hybrid search over indexed markdown docs (doc_kind filter)\n\
-                 - search_github: hybrid search over indexed GitHub issues + PRs (entity_type, repo, state filters)\n\
-                 - list_repos: list indexed repositories with file and chunk counts\n\
-                 - get_file: retrieve all chunks for a specific file\n\
-                 - fetch_package: download and index a Haskell package from CHaP or Hackage on demand\n\
-                 \n\
-                 IMPORTANT — external packages:\n\
-                 When you need source-level detail about a library that isn't in the current index, \
-                 call fetch_package FIRST. It downloads and indexes the package so subsequent \
-                 search_code calls can find it. It is a no-op if already indexed.\n\
-                 - Haskell: fetch_package({\"package\": \"serialise\", \"version\": \"0.2.6.1\", \"ecosystem\": \"haskell\"})\n\
-                 - Rust: fetch_package({\"package\": \"tokio\", \"version\": \"1.0.0\", \"ecosystem\": \"rust\"})\n\
-                 - Python: fetch_package({\"package\": \"requests\", \"version\": \"2.31.0\", \"ecosystem\": \"python\"})\n\
-                 Then use search_code with language=haskell, language=rust, or language=python to query the indexed source."
-                    .to_string(),
-            ),
+            instructions: Some({
+                let project_note = if self.projects.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "\nProject isolation: this server is scoped to project(s): {}. \
+                         Only chunks tagged with these projects are visible.\n",
+                        self.projects.join(", ")
+                    )
+                };
+                format!(
+                    "Hybrid BM25+vector code search with optional cross-encoder reranking.\n\
+                     {project_note}\n\
+                     Tools:\n\
+                     - search_code: hybrid search over indexed code (language, symbol_kind filters)\n\
+                     - bm25_search: BM25-only, best for exact identifiers and symbols\n\
+                     - search_docs: hybrid search over indexed markdown docs (doc_kind filter)\n\
+                     - search_github: hybrid search over indexed GitHub issues + PRs (entity_type, repo, state filters)\n\
+                     - list_repos: list indexed repositories with file and chunk counts\n\
+                     - get_file: retrieve all chunks for a specific file\n\
+                     - fetch_package: download and index a Haskell package from CHaP or Hackage on demand\n\
+                     \n\
+                     IMPORTANT — external packages:\n\
+                     When you need source-level detail about a library that isn't in the current index, \
+                     call fetch_package FIRST. It downloads and indexes the package so subsequent \
+                     search_code calls can find it. It is a no-op if already indexed.\n\
+                     - Haskell: fetch_package({{\"package\": \"serialise\", \"version\": \"0.2.6.1\", \"ecosystem\": \"haskell\"}})\n\
+                     - Rust: fetch_package({{\"package\": \"tokio\", \"version\": \"1.0.0\", \"ecosystem\": \"rust\"}})\n\
+                     - Python: fetch_package({{\"package\": \"requests\", \"version\": \"2.31.0\", \"ecosystem\": \"python\"}})\n\
+                     Then use search_code with language=haskell, language=rust, or language=python to query the indexed source."
+                )
+            }),
             ..Default::default()
         }
     }

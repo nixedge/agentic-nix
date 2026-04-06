@@ -7,20 +7,25 @@ pub struct RepoMeta<'a> {
     pub version: Option<&'a str>,
     pub git_url: Option<&'a str>,
     pub git_rev: Option<&'a str>,
+    pub project: Option<&'a str>,
 }
 
 pub async fn upsert_repo(pool: &PgPool, repo_path: &str, meta: &RepoMeta<'_>) -> Result<()> {
+    let project_arr: Option<Vec<String>> = meta.project.map(|p| vec![p.to_string()]);
     sqlx::query(
         r#"
         INSERT INTO repo_index
-            (repo_path, source_kind, package_name, version, git_url, git_rev, indexed_at)
-        VALUES ($1, $2, $3, $4, $5, $6, NOW())
+            (repo_path, source_kind, package_name, version, git_url, git_rev, project, indexed_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::text[], NOW())
         ON CONFLICT (repo_path) DO UPDATE SET
             source_kind  = EXCLUDED.source_kind,
             package_name = EXCLUDED.package_name,
             version      = EXCLUDED.version,
             git_url      = EXCLUDED.git_url,
             git_rev      = EXCLUDED.git_rev,
+            project      = (SELECT array_agg(DISTINCT p)
+                            FROM unnest(coalesce(repo_index.project, '{}'::text[])
+                                     || coalesce(EXCLUDED.project, '{}'::text[])) p),
             indexed_at   = NOW()
         "#,
     )
@@ -30,6 +35,7 @@ pub async fn upsert_repo(pool: &PgPool, repo_path: &str, meta: &RepoMeta<'_>) ->
     .bind(meta.version)
     .bind(meta.git_url)
     .bind(meta.git_rev)
+    .bind(project_arr)
     .execute(pool)
     .await?;
     Ok(())

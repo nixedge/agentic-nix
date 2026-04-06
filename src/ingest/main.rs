@@ -42,6 +42,9 @@ enum Commands {
         /// Skip markdown doc indexing for this repo
         #[arg(long)]
         no_docs: bool,
+        /// Tag chunks with this project name for scoped search isolation
+        #[arg(long)]
+        project: Option<String>,
     },
     /// Index markdown documentation only (AGENTS.md, README, .agent/**, and all .md files)
     Docs {
@@ -50,6 +53,9 @@ enum Commands {
         /// Clear existing documents and re-index
         #[arg(long)]
         force: bool,
+        /// Tag chunks with this project name for scoped search isolation
+        #[arg(long)]
+        project: Option<String>,
     },
     /// Index GitHub issues and pull requests
     Github {
@@ -71,6 +77,9 @@ enum Commands {
         /// Re-index even if already present
         #[arg(long)]
         force: bool,
+        /// Tag chunks with this project name for scoped search isolation
+        #[arg(long)]
+        project: Option<String>,
     },
     /// Fetch a Rust crate from crates.io and index it
     Crate {
@@ -81,6 +90,9 @@ enum Commands {
         /// Re-index even if already present
         #[arg(long)]
         force: bool,
+        /// Tag chunks with this project name for scoped search isolation
+        #[arg(long)]
+        project: Option<String>,
     },
     /// Fetch a Python package from PyPI and index it
     Pypi {
@@ -91,6 +103,9 @@ enum Commands {
         /// Re-index even if already present
         #[arg(long)]
         force: bool,
+        /// Tag chunks with this project name for scoped search isolation
+        #[arg(long)]
+        project: Option<String>,
     },
     /// Clone a git repository by branch, tag, or commit hash and index it
     Git {
@@ -111,6 +126,9 @@ enum Commands {
         /// Skip markdown doc indexing
         #[arg(long)]
         no_docs: bool,
+        /// Tag chunks with this project name for scoped search isolation
+        #[arg(long)]
+        project: Option<String>,
     },
     /// List all indexed repos from repo_index
     List {
@@ -161,12 +179,13 @@ async fn main() -> Result<()> {
             force,
             pattern,
             no_docs,
+            project,
         } => {
             let canonical = repo_path.canonicalize()?;
             let repo_str = canonical.to_string_lossy().into_owned();
-            code::ingest_code(&pool, &repo_path, force, &pattern, None).await?;
+            code::ingest_code(&pool, &repo_path, force, &pattern, None, project.as_deref()).await?;
             if !no_docs {
-                docs::ingest_docs(&pool, &repo_path, force, None).await?;
+                docs::ingest_docs(&pool, &repo_path, force, None, project.as_deref()).await?;
             }
             upsert_repo(
                 &pool,
@@ -177,12 +196,17 @@ async fn main() -> Result<()> {
                     version: None,
                     git_url: None,
                     git_rev: None,
+                    project: project.as_deref(),
                 },
             )
             .await?;
         }
-        Commands::Docs { repo_path, force } => {
-            docs::ingest_docs(&pool, &repo_path, force, None).await?;
+        Commands::Docs {
+            repo_path,
+            force,
+            project,
+        } => {
+            docs::ingest_docs(&pool, &repo_path, force, None, project.as_deref()).await?;
         }
         Commands::Github {
             repo,
@@ -195,22 +219,25 @@ async fn main() -> Result<()> {
             package,
             version,
             force,
+            project,
         } => {
-            hackage::ingest_hackage(&pool, &package, &version, force).await?;
+            hackage::ingest_hackage(&pool, &package, &version, force, project.as_deref()).await?;
         }
         Commands::Crate {
             package,
             version,
             force,
+            project,
         } => {
-            crates::ingest_crate(&pool, &package, &version, force).await?;
+            crates::ingest_crate(&pool, &package, &version, force, project.as_deref()).await?;
         }
         Commands::Pypi {
             package,
             version,
             force,
+            project,
         } => {
-            pypi::ingest_pypi(&pool, &package, &version, force).await?;
+            pypi::ingest_pypi(&pool, &package, &version, force, project.as_deref()).await?;
         }
         Commands::Git {
             url,
@@ -219,6 +246,7 @@ async fn main() -> Result<()> {
             tag,
             force,
             no_docs,
+            project,
         } => {
             git::ingest_git(
                 &pool,
@@ -228,6 +256,7 @@ async fn main() -> Result<()> {
                 tag.as_deref(),
                 force,
                 no_docs,
+                project.as_deref(),
             )
             .await?;
         }

@@ -73,7 +73,7 @@ async fn main() -> Result<()> {
 
         Some(Command::Repos) => {
             let pool = sqlx::PgPool::connect(&dsn).await?;
-            let repos = db::list_repos(&pool).await?;
+            let repos = db::list_repos(&pool, &[]).await?;
             if repos.is_empty() {
                 println!("No repositories indexed yet.\nRun: just index /path/to/repo");
             } else {
@@ -105,6 +105,7 @@ async fn main() -> Result<()> {
                 language.as_deref(),
                 kind.as_deref(),
                 repo.as_deref(),
+                &[],
             )
             .await?;
             println!("{}", fmt::fmt_chunks(&rows, None, "rrf"));
@@ -125,6 +126,7 @@ async fn main() -> Result<()> {
                 language.as_deref(),
                 kind.as_deref(),
                 repo.as_deref(),
+                &[],
             )
             .await?;
             println!("{}", fmt::fmt_chunks(&rows, None, "bm25"));
