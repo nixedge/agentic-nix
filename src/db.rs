@@ -318,8 +318,8 @@ pub async fn search_docs_hybrid(
          ),
          fused AS (
              SELECT COALESCE(b.id, v.id) AS id,
-                    COALESCE(1.0 / (60 + b.rank), 0.0)
-                  + COALESCE(1.0 / (60 + v.rank), 0.0) AS rrf_score
+                    (COALESCE(1.0 / (60 + b.rank), 0.0)
+                  + COALESCE(1.0 / (60 + v.rank), 0.0))::float8 AS rrf_score
              FROM bm25_with_rank b
              FULL OUTER JOIN vec_ranked v USING (id)
          )
@@ -411,8 +411,8 @@ pub async fn search_github_hybrid(
              ),
              fused AS (
                  SELECT COALESCE(b.id, v.id) AS id,
-                        COALESCE(1.0 / (60 + b.rank), 0.0)
-                      + COALESCE(1.0 / (60 + v.rank), 0.0) AS rrf_score
+                        (COALESCE(1.0 / (60 + b.rank), 0.0)
+                      + COALESCE(1.0 / (60 + v.rank), 0.0))::float8 AS rrf_score
                  FROM bm25_with_rank b
                  FULL OUTER JOIN vec_ranked v USING (id)
              )
@@ -473,8 +473,8 @@ pub async fn search_github_hybrid(
              ),
              fused AS (
                  SELECT COALESCE(b.id, v.id) AS id,
-                        COALESCE(1.0 / (60 + b.rank), 0.0)
-                      + COALESCE(1.0 / (60 + v.rank), 0.0) AS rrf_score
+                        (COALESCE(1.0 / (60 + b.rank), 0.0)
+                      + COALESCE(1.0 / (60 + v.rank), 0.0))::float8 AS rrf_score
                  FROM bm25_with_rank b
                  FULL OUTER JOIN vec_ranked v USING (id)
              )
