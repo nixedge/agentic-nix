@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use tokio::task::JoinSet;
 
-use super::embed::{embed_batch, vec_literal};
+use super::embed::{embed_batch, ensure_embed_model, vec_literal};
 use super::symbols::extract_symbols;
 
 const EMBED_BATCH: usize = 16;
@@ -48,6 +48,9 @@ pub async fn ingest_code(
         Some(s) => s.to_string(),
         None => repo_path.canonicalize()?.to_string_lossy().into_owned(),
     };
+
+    // Ensure the embed model is available before doing any work.
+    ensure_embed_model().await?;
 
     // Collect files
     let all_files = collect_files(repo_path, extra_patterns);
@@ -106,7 +109,9 @@ pub async fn ingest_code(
             .collect()
     };
 
-    let bar = ProgressBar::new(all_files.len() as u64);
+    let n_files = all_files.len();
+    let log_every = (n_files / 10).max(1);
+    let bar = ProgressBar::new(n_files as u64);
     bar.set_style(
         ProgressStyle::default_bar()
             .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
@@ -120,7 +125,7 @@ pub async fn ingest_code(
     let mut skipped_files = 0usize;
     let mut incremental_skips = 0usize;
 
-    for file_path in &all_files {
+    for (file_idx, file_path) in all_files.iter().enumerate() {
         bar.set_message(
             file_path
                 .file_name()
@@ -215,6 +220,14 @@ pub async fn ingest_code(
                 let pool2 = pool.clone();
                 tasks.spawn(async move { flush_bulk(batch, pool2).await });
             }
+        }
+        if bar.is_hidden() && (file_idx + 1) % log_every == 0 {
+            eprintln!(
+                "  [{}/{}] files · {} chunks indexed",
+                file_idx + 1,
+                n_files,
+                total_chunks,
+            );
         }
         bar.inc(1);
     }
@@ -330,6 +343,7 @@ fn detect_language(path: &Path) -> String {
         "nix" => "nix",
         "go" => "go",
         "java" => "java",
+        "kt" | "kts" => "kotlin",
         "scala" => "scala",
         "ml" | "mli" => "ocaml",
         "c" | "h" => "c",
@@ -356,6 +370,10 @@ const SYMBOL_LANGUAGES: &[&str] = &[
     "haskell",
     "latex",
     "nix",
+    "c",
+    "cpp",
+    "java",
+    "kotlin",
 ];
 
 fn make_chunks(source: &str, language: &str) -> Vec<Chunk> {

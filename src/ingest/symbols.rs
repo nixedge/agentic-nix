@@ -23,6 +23,10 @@ pub fn extract_symbols(source: &str, language: &str) -> Vec<Symbol> {
         "haskell" => extract_haskell_symbols(bytes, &lines),
         "latex" => extract_latex_symbols(bytes, &lines),
         "nix" => extract_nix_symbols(bytes, &lines),
+        "c" => extract_c_symbols(bytes, &lines),
+        "cpp" => extract_cpp_symbols(bytes, &lines),
+        "java" => extract_java_symbols(bytes, &lines),
+        "kotlin" => extract_kotlin_symbols(bytes, &lines),
         _ => vec![],
     };
 
@@ -37,6 +41,7 @@ pub fn extract_symbols(source: &str, language: &str) -> Vec<Symbol> {
 fn make_parser(lang: tree_sitter::Language) -> Option<tree_sitter::Parser> {
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&lang).ok()?;
+    parser.set_timeout_micros(5_000_000); // 5 s — bail on pathological inputs (e.g. long hex-escape strings)
     Some(parser)
 }
 
@@ -996,6 +1001,486 @@ fn group_haskell_decls(decls: &[HsDecl], lines: &[&str]) -> Vec<Symbol> {
     syms
 }
 
+// ── C / C++ ───────────────────────────────────────────────────────────────────
+
+fn extract_c_symbols(source: &[u8], lines: &[&str]) -> Vec<Symbol> {
+    let lang: tree_sitter::Language = tree_sitter_c::LANGUAGE.into();
+    let mut parser = match make_parser(lang) {
+        Some(p) => p,
+        None => return vec![],
+    };
+    let tree = match parser.parse(source, None) {
+        Some(t) => t,
+        None => return vec![],
+    };
+    let mut syms = vec![];
+    let mut cursor = tree.root_node().walk();
+    for child in tree.root_node().named_children(&mut cursor) {
+        visit_c_node(&child, source, lines, &mut syms);
+    }
+    syms
+}
+
+fn extract_cpp_symbols(source: &[u8], lines: &[&str]) -> Vec<Symbol> {
+    let lang: tree_sitter::Language = tree_sitter_cpp::LANGUAGE.into();
+    let mut parser = match make_parser(lang) {
+        Some(p) => p,
+        None => return vec![],
+    };
+    let tree = match parser.parse(source, None) {
+        Some(t) => t,
+        None => return vec![],
+    };
+    let mut syms = vec![];
+    let mut cursor = tree.root_node().walk();
+    for child in tree.root_node().named_children(&mut cursor) {
+        visit_c_node(&child, source, lines, &mut syms);
+    }
+    syms
+}
+
+/// Recursively extract named symbols from a C or C++ AST node.
+fn visit_c_node(
+    node: &tree_sitter::Node<'_>,
+    source: &[u8],
+    lines: &[&str],
+    syms: &mut Vec<Symbol>,
+) {
+    match node.kind() {
+        "function_definition" => {
+            if let Some(decl) = node.child_by_field_name("declarator") {
+                if let Some(name) = c_declarator_name(&decl, source) {
+                    let start = node.start_position().row;
+                    let end = node.end_position().row;
+                    let doc_start = c_comment_start(lines, start);
+                    syms.push(Symbol {
+                        name,
+                        kind: "function".into(),
+                        content: lines_slice(lines, doc_start, end),
+                        start_line: doc_start + 1,
+                        end_line: end + 1,
+                    });
+                }
+            }
+        }
+
+        // Structs and unions with a named body
+        "struct_specifier" | "union_specifier" => {
+            if node.child_by_field_name("body").is_some() {
+                if let Some(name) = node
+                    .child_by_field_name("name")
+                    .and_then(|n| n.utf8_text(source).ok())
+                    .map(|s| s.to_string())
+                {
+                    let start = node.start_position().row;
+                    let end = node.end_position().row;
+                    let doc_start = c_comment_start(lines, start);
+                    syms.push(Symbol {
+                        name,
+                        kind: "struct".into(),
+                        content: lines_slice(lines, doc_start, end),
+                        start_line: doc_start + 1,
+                        end_line: end + 1,
+                    });
+                }
+            }
+        }
+
+        "enum_specifier" => {
+            if node.child_by_field_name("body").is_some() {
+                if let Some(name) = node
+                    .child_by_field_name("name")
+                    .and_then(|n| n.utf8_text(source).ok())
+                    .map(|s| s.to_string())
+                {
+                    let start = node.start_position().row;
+                    let end = node.end_position().row;
+                    let doc_start = c_comment_start(lines, start);
+                    syms.push(Symbol {
+                        name,
+                        kind: "enum".into(),
+                        content: lines_slice(lines, doc_start, end),
+                        start_line: doc_start + 1,
+                        end_line: end + 1,
+                    });
+                }
+            }
+        }
+
+        // typedef → extract the alias name from the declarator
+        "type_definition" => {
+            if let Some(decl) = node.child_by_field_name("declarator") {
+                if let Some(name) = c_declarator_name(&decl, source) {
+                    let start = node.start_position().row;
+                    let end = node.end_position().row;
+                    let doc_start = c_comment_start(lines, start);
+                    syms.push(Symbol {
+                        name,
+                        kind: "type".into(),
+                        content: lines_slice(lines, doc_start, end),
+                        start_line: doc_start + 1,
+                        end_line: end + 1,
+                    });
+                }
+            }
+        }
+
+        // #define macros
+        "preproc_def" | "preproc_function_def" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if let Ok(name) = name_node.utf8_text(source) {
+                    let start = node.start_position().row;
+                    let end = node.end_position().row;
+                    syms.push(Symbol {
+                        name: name.to_string(),
+                        kind: "const".into(),
+                        content: lines_slice(lines, start, end),
+                        start_line: start + 1,
+                        end_line: end + 1,
+                    });
+                }
+            }
+        }
+
+        // C++: class with body
+        "class_specifier" => {
+            if let Some(name) = node
+                .child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .map(|s| s.to_string())
+            {
+                let start = node.start_position().row;
+                let end = node.end_position().row;
+                let doc_start = c_comment_start(lines, start);
+                syms.push(Symbol {
+                    name,
+                    kind: "class".into(),
+                    content: lines_slice(lines, doc_start, end),
+                    start_line: doc_start + 1,
+                    end_line: end + 1,
+                });
+            }
+            // Recurse into body for methods
+            if let Some(body) = node.child_by_field_name("body") {
+                let mut cursor = body.walk();
+                for child in body.named_children(&mut cursor) {
+                    visit_c_node(&child, source, lines, syms);
+                }
+            }
+        }
+
+        // C++: recurse through namespaces, extern "C" blocks, and templates
+        "namespace_definition" | "linkage_specification" => {
+            if let Some(body) = node.child_by_field_name("body") {
+                let mut cursor = body.walk();
+                for child in body.named_children(&mut cursor) {
+                    visit_c_node(&child, source, lines, syms);
+                }
+            }
+        }
+        "template_declaration" => {
+            // The templated entity is the last named child (function, class, etc.)
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                match child.kind() {
+                    "function_definition" | "class_specifier" | "struct_specifier"
+                    | "type_definition" => visit_c_node(&child, source, lines, syms),
+                    _ => {}
+                }
+            }
+        }
+
+        // Declarations at file scope wrap struct/enum/union specifiers
+        "declaration" => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                match child.kind() {
+                    "struct_specifier" | "union_specifier" | "enum_specifier" => {
+                        visit_c_node(&child, source, lines, syms)
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        _ => {}
+    }
+}
+
+/// Recursively extract a declarator's identifier (handles pointer/function/reference layers).
+fn c_declarator_name(node: &tree_sitter::Node<'_>, source: &[u8]) -> Option<String> {
+    match node.kind() {
+        "identifier" | "type_identifier" | "field_identifier" | "namespace_identifier" => {
+            node.utf8_text(source).ok().map(|s| s.to_string())
+        }
+        "function_declarator"
+        | "pointer_declarator"
+        | "reference_declarator"
+        | "parenthesized_declarator"
+        | "abstract_function_declarator"
+        | "abstract_pointer_declarator"
+        | "abstract_reference_declarator"
+        | "abstract_parenthesized_declarator" => node
+            .child_by_field_name("declarator")
+            .and_then(|n| c_declarator_name(&n, source)),
+        _ => None,
+    }
+}
+
+/// Walk backward from `symbol_start` collecting preceding C/C++ comment lines.
+fn c_comment_start(lines: &[&str], symbol_start: usize) -> usize {
+    let mut start = symbol_start;
+    while start > 0 {
+        let line = lines[start - 1].trim_start();
+        if line.starts_with("//") || line.starts_with("/*") || line.starts_with('*') {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    start
+}
+
+// ── Java ──────────────────────────────────────────────────────────────────────
+
+fn extract_java_symbols(source: &[u8], lines: &[&str]) -> Vec<Symbol> {
+    let lang: tree_sitter::Language = tree_sitter_java::LANGUAGE.into();
+    let mut parser = match make_parser(lang) {
+        Some(p) => p,
+        None => return vec![],
+    };
+    let tree = match parser.parse(source, None) {
+        Some(t) => t,
+        None => return vec![],
+    };
+    let mut syms = vec![];
+    let mut cursor = tree.root_node().walk();
+    for child in tree.root_node().named_children(&mut cursor) {
+        visit_java_node(&child, source, lines, None, &mut syms);
+    }
+    syms
+}
+
+fn visit_java_node(
+    node: &tree_sitter::Node<'_>,
+    source: &[u8],
+    lines: &[&str],
+    class_name: Option<&str>,
+    syms: &mut Vec<Symbol>,
+) {
+    match node.kind() {
+        "class_declaration"
+        | "interface_declaration"
+        | "enum_declaration"
+        | "annotation_type_declaration"
+        | "record_declaration" => {
+            if let Some(name) = node_name(node, source) {
+                let kind = match node.kind() {
+                    "interface_declaration" => "interface",
+                    "enum_declaration" => "enum",
+                    "annotation_type_declaration" => "annotation",
+                    "record_declaration" => "record",
+                    _ => "class",
+                };
+                let start = node.start_position().row;
+                let end = node.end_position().row;
+                let doc_start = c_comment_start(lines, start);
+                syms.push(Symbol {
+                    name: name.clone(),
+                    kind: kind.into(),
+                    content: lines_slice(lines, doc_start, end),
+                    start_line: doc_start + 1,
+                    end_line: end + 1,
+                });
+                if let Some(body) = node.child_by_field_name("body") {
+                    let mut cursor = body.walk();
+                    for child in body.named_children(&mut cursor) {
+                        visit_java_node(&child, source, lines, Some(&name), syms);
+                    }
+                }
+            }
+        }
+        "method_declaration" => {
+            if let Some(method_name) = node_name(node, source) {
+                let start = node.start_position().row;
+                let end = node.end_position().row;
+                let doc_start = c_comment_start(lines, start);
+                let qualified = match class_name {
+                    Some(c) => format!("{c}.{method_name}"),
+                    None => method_name,
+                };
+                syms.push(Symbol {
+                    name: qualified,
+                    kind: "method".into(),
+                    content: lines_slice(lines, doc_start, end),
+                    start_line: doc_start + 1,
+                    end_line: end + 1,
+                });
+            }
+        }
+        "constructor_declaration" => {
+            if let Some(name) = node_name(node, source) {
+                let start = node.start_position().row;
+                let end = node.end_position().row;
+                let doc_start = c_comment_start(lines, start);
+                let qualified = match class_name {
+                    Some(c) => format!("{c}.{name}"),
+                    None => name,
+                };
+                syms.push(Symbol {
+                    name: qualified,
+                    kind: "constructor".into(),
+                    content: lines_slice(lines, doc_start, end),
+                    start_line: doc_start + 1,
+                    end_line: end + 1,
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+// ── Kotlin ────────────────────────────────────────────────────────────────────
+
+fn extract_kotlin_symbols(source: &[u8], lines: &[&str]) -> Vec<Symbol> {
+    let lang: tree_sitter::Language = tree_sitter_kotlin_sg::LANGUAGE.into();
+    let mut parser = match make_parser(lang) {
+        Some(p) => p,
+        None => return vec![],
+    };
+    let tree = match parser.parse(source, None) {
+        Some(t) => t,
+        None => return vec![],
+    };
+    let mut syms = vec![];
+    let mut cursor = tree.root_node().walk();
+    for child in tree.root_node().named_children(&mut cursor) {
+        visit_kotlin_node(&child, source, lines, None, &mut syms);
+    }
+    syms
+}
+
+/// First `type_identifier` named child — class/object names in Kotlin.
+fn kotlin_type_name(node: &tree_sitter::Node<'_>, source: &[u8]) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "type_identifier" {
+            return child.utf8_text(source).ok().map(|s| s.to_string());
+        }
+    }
+    None
+}
+
+/// First `simple_identifier` named child — function names in Kotlin.
+fn kotlin_simple_name(node: &tree_sitter::Node<'_>, source: &[u8]) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "simple_identifier" {
+            return child.utf8_text(source).ok().map(|s| s.to_string());
+        }
+    }
+    None
+}
+
+/// Property name from `variable_declaration → simple_identifier`.
+fn kotlin_property_name(node: &tree_sitter::Node<'_>, source: &[u8]) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "variable_declaration" {
+            return kotlin_simple_name(&child, source);
+        }
+    }
+    None
+}
+
+fn visit_kotlin_node(
+    node: &tree_sitter::Node<'_>,
+    source: &[u8],
+    lines: &[&str],
+    class_name: Option<&str>,
+    syms: &mut Vec<Symbol>,
+) {
+    match node.kind() {
+        "class_declaration" | "object_declaration" | "companion_object" => {
+            let kind = if node.kind() == "class_declaration" {
+                "class"
+            } else {
+                "object"
+            };
+            let name = match kotlin_type_name(node, source) {
+                Some(n) => match class_name {
+                    Some(c) => format!("{c}.{n}"),
+                    None => n,
+                },
+                None if node.kind() == "companion_object" => match class_name {
+                    Some(c) => format!("{c}.Companion"),
+                    None => "Companion".to_string(),
+                },
+                None => return,
+            };
+            let start = node.start_position().row;
+            let end = node.end_position().row;
+            let doc_start = c_comment_start(lines, start);
+            syms.push(Symbol {
+                name: name.clone(),
+                kind: kind.into(),
+                content: lines_slice(lines, doc_start, end),
+                start_line: doc_start + 1,
+                end_line: end + 1,
+            });
+            // Recurse into body members
+            let mut body_cursor = node.walk();
+            for body_child in node.named_children(&mut body_cursor) {
+                if matches!(body_child.kind(), "class_body" | "enum_class_body") {
+                    let mut member_cursor = body_child.walk();
+                    for member in body_child.named_children(&mut member_cursor) {
+                        visit_kotlin_node(&member, source, lines, Some(&name), syms);
+                    }
+                    break;
+                }
+            }
+        }
+        "function_declaration" => {
+            if let Some(fn_name) = kotlin_simple_name(node, source) {
+                let start = node.start_position().row;
+                let end = node.end_position().row;
+                let doc_start = c_comment_start(lines, start);
+                let qualified = match class_name {
+                    Some(c) => format!("{c}.{fn_name}"),
+                    None => fn_name,
+                };
+                let kind = if class_name.is_some() { "method" } else { "function" };
+                syms.push(Symbol {
+                    name: qualified,
+                    kind: kind.into(),
+                    content: lines_slice(lines, doc_start, end),
+                    start_line: doc_start + 1,
+                    end_line: end + 1,
+                });
+            }
+        }
+        "property_declaration" => {
+            if let Some(prop_name) = kotlin_property_name(node, source) {
+                let start = node.start_position().row;
+                let end = node.end_position().row;
+                let doc_start = c_comment_start(lines, start);
+                let qualified = match class_name {
+                    Some(c) => format!("{c}.{prop_name}"),
+                    None => prop_name,
+                };
+                syms.push(Symbol {
+                    name: qualified,
+                    kind: "property".into(),
+                    content: lines_slice(lines, doc_start, end),
+                    start_line: doc_start + 1,
+                    end_line: end + 1,
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1572,6 +2057,150 @@ flagged = 2
         assert!(
             find(&syms, "binding", "add").is_some(),
             "expected binding 'add'; got {:?}",
+            names(&syms)
+        );
+    }
+
+    // ══ Java ══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn java_extracts_class_and_methods() {
+        let src = r#"
+public class Greeter {
+    private String name;
+
+    public Greeter(String name) { this.name = name; }
+
+    public String greet() { return "Hello, " + name; }
+}
+"#;
+        let syms = sym("java", src);
+        assert!(
+            find(&syms, "class", "Greeter").is_some(),
+            "expected class 'Greeter'; got {:?}",
+            names(&syms)
+        );
+        assert!(
+            find(&syms, "constructor", "Greeter").is_some(),
+            "expected constructor; got {:?}",
+            names(&syms)
+        );
+        assert!(
+            find(&syms, "method", "greet").is_some(),
+            "expected method 'greet'; got {:?}",
+            names(&syms)
+        );
+    }
+
+    #[test]
+    fn java_extracts_interface_and_enum() {
+        let src = r#"
+public interface Shape {
+    double area();
+}
+public enum Direction { NORTH, SOUTH, EAST, WEST }
+"#;
+        let syms = sym("java", src);
+        assert!(
+            find(&syms, "interface", "Shape").is_some(),
+            "expected interface 'Shape'; got {:?}",
+            names(&syms)
+        );
+        assert!(
+            find(&syms, "enum", "Direction").is_some(),
+            "expected enum 'Direction'; got {:?}",
+            names(&syms)
+        );
+    }
+
+    #[test]
+    fn java_methods_qualified_with_class() {
+        let src = r#"
+class Counter {
+    public void increment() {}
+    public int get() { return 0; }
+}
+"#;
+        let syms = sym("java", src);
+        assert!(
+            find(&syms, "method", "Counter.increment").is_some(),
+            "method should be qualified; got {:?}",
+            names(&syms)
+        );
+        assert!(
+            find(&syms, "method", "Counter.get").is_some(),
+            "method should be qualified; got {:?}",
+            names(&syms)
+        );
+    }
+
+    // ══ Kotlin ════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn kotlin_extracts_class_and_fun() {
+        let src = r#"
+class Greeter(val name: String) {
+    fun greet(): String = "Hello, $name"
+}
+
+fun topLevel(): Int = 42
+"#;
+        let syms = sym("kotlin", src);
+        assert!(
+            find(&syms, "class", "Greeter").is_some(),
+            "expected class 'Greeter'; got {:?}",
+            names(&syms)
+        );
+        assert!(
+            find(&syms, "method", "greet").is_some(),
+            "expected method 'greet'; got {:?}",
+            names(&syms)
+        );
+        assert!(
+            find(&syms, "function", "topLevel").is_some(),
+            "expected top-level function 'topLevel'; got {:?}",
+            names(&syms)
+        );
+    }
+
+    #[test]
+    fn kotlin_extracts_object_declaration() {
+        let src = r#"
+object Singleton {
+    val value = 42
+    fun doSomething() {}
+}
+"#;
+        let syms = sym("kotlin", src);
+        assert!(
+            find(&syms, "object", "Singleton").is_some(),
+            "expected object 'Singleton'; got {:?}",
+            names(&syms)
+        );
+        assert!(
+            find(&syms, "method", "doSomething").is_some(),
+            "expected method inside object; got {:?}",
+            names(&syms)
+        );
+    }
+
+    #[test]
+    fn kotlin_methods_qualified_with_class() {
+        let src = r#"
+class Calculator {
+    fun add(a: Int, b: Int): Int = a + b
+    fun subtract(a: Int, b: Int): Int = a - b
+}
+"#;
+        let syms = sym("kotlin", src);
+        assert!(
+            find(&syms, "method", "Calculator.add").is_some(),
+            "method should be qualified; got {:?}",
+            names(&syms)
+        );
+        assert!(
+            find(&syms, "method", "Calculator.subtract").is_some(),
+            "method should be qualified; got {:?}",
             names(&syms)
         );
     }
