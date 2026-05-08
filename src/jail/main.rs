@@ -13,11 +13,11 @@ use std::{env, fs};
     about = "Run claude in a bubblewrap sandbox with nix daemon access"
 )]
 struct Args {
-    /// Bind path read-only at ~/basename inside the jail. Repeatable.
+    /// Bind path read-only at its real path inside the jail. Repeatable.
     #[arg(long = "ro", value_name = "PATH")]
     ro_paths: Vec<PathBuf>,
 
-    /// Bind path read-write at ~/basename inside the jail. Repeatable.
+    /// Bind path read-write at its real path inside the jail. Repeatable.
     #[arg(long = "rw", value_name = "PATH")]
     rw_paths: Vec<PathBuf>,
 
@@ -146,19 +146,28 @@ fn main() -> Result<()> {
         }
     }
 
-    // ~/repo — the user's current working directory
-    bind(&mut b, "--bind", &cwd, &home.join("repo"));
+    // Bind the current directory at its real path so $PWD, realpath("."),
+    // direnv trust hashes, and any tool keyed on the absolute path all match.
+    // --dir uses mkdir -p semantics in the sandbox namespace.
+    if let Some(parent) = cwd.parent() {
+        push(&mut b, &["--dir", &parent.to_string_lossy()]);
+    }
+    bind(&mut b, "--bind", &cwd, &cwd);
 
-    // Extra read-only paths at ~/basename
+    // Extra read-only paths — bind at real path (mkdir -p parent first)
     for path in &args.ro_paths {
-        let dest = home.join(path.file_name().unwrap_or(path.as_os_str()));
-        bind(&mut b, "--ro-bind", path, &dest);
+        if let Some(parent) = path.parent() {
+            push(&mut b, &["--dir", &parent.to_string_lossy()]);
+        }
+        bind(&mut b, "--ro-bind", path, path);
     }
 
-    // Extra read-write paths at ~/basename
+    // Extra read-write paths — bind at real path (mkdir -p parent first)
     for path in &args.rw_paths {
-        let dest = home.join(path.file_name().unwrap_or(path.as_os_str()));
-        bind(&mut b, "--bind", path, &dest);
+        if let Some(parent) = path.parent() {
+            push(&mut b, &["--dir", &parent.to_string_lossy()]);
+        }
+        bind(&mut b, "--bind", path, path);
     }
 
     // Clear inherited environment; set everything explicitly below.
@@ -261,9 +270,9 @@ fn main() -> Result<()> {
     // TMPDIR inside jail
     setenv(&mut b, "TMPDIR", "/tmp");
 
-    // Change to ~/repo before starting claude
+    // Change to the real path so $PWD matches what the user expects
     b.push("--chdir".into());
-    b.push(home.join("repo").as_os_str().into());
+    b.push(cwd.as_os_str().into());
 
     // Command to exec
     b.push("--".into());
