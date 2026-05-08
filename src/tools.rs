@@ -6,7 +6,42 @@ use rmcp::{
 use serde::Deserialize;
 use sqlx::PgPool;
 
-use mcp_server::ingest::{crates::ingest_crate, hackage::ingest_hackage, pypi::ingest_pypi};
+use mcp_server::ingest::{
+    crates::ingest_crate,
+    embed::ensure_embed_model,
+    hackage::ingest_hackage,
+    pypi::ingest_pypi,
+};
+
+/// Returns a warning string if the Ollama embed model is loaded on CPU (size_vram == 0).
+/// Empty string if GPU is in use or the check fails.
+async fn gpu_warning() -> String {
+    let host = std::env::var("OLLAMA_HOST")
+        .unwrap_or_else(|_| "http://127.0.0.1:11434".into());
+    let Ok(resp) = reqwest::get(format!("{host}/api/ps")).await else {
+        return String::new();
+    };
+    let Ok(data) = resp.json::<serde_json::Value>().await else {
+        return String::new();
+    };
+    let on_cpu = data["models"]
+        .as_array()
+        .map(|models| {
+            models.iter().any(|m| {
+                m["size"].as_u64().unwrap_or(0) > 0
+                    && m["size_vram"].as_u64().unwrap_or(0) == 0
+            })
+        })
+        .unwrap_or(false);
+
+    if on_cpu {
+        "\n\nWARNING: Ollama is running the embed model on CPU (size_vram=0). \
+         Indexing will be slow. Check GPU/CUDA configuration on the Ollama host."
+            .to_string()
+    } else {
+        String::new()
+    }
+}
 
 use crate::{db, embed, fmt, rerank};
 
@@ -462,6 +497,17 @@ impl CodeSearchServer {
         // Call the ingest functions directly (no subprocess).
         // Tag newly indexed packages with the first configured project (if any).
         let ingest_project = self.projects.first().map(String::as_str);
+        let gpu_warn = gpu_warning().await;
+        if gpu_warn.is_empty() {
+            eprintln!("[agentic-nix] Fetching and indexing {ecosystem} {pkg_ver}...");
+        } else {
+            eprintln!("[agentic-nix] Fetching and indexing {ecosystem} {pkg_ver}... (WARNING: Ollama on CPU — will be slow)");
+        }
+        if let Err(e) = ensure_embed_model().await {
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Cannot reach Ollama embed model: {e}"
+            ))]));
+        }
         let result = match subcommand {
             "hackage" => ingest_hackage(&self.pool, &package, &version, false, ingest_project).await,
             "crate" => ingest_crate(&self.pool, &package, &version, false, ingest_project).await,
@@ -493,12 +539,12 @@ impl CodeSearchServer {
             let proj = ingest_project.unwrap();
             format!(
                 "Added {pkg_ver} to project '{proj}': {chunks} chunks now visible.\n\
-                 Use search_code with language={language} to query it."
+                 Use search_code with language={language} to query it.{gpu_warn}"
             )
         } else {
             format!(
                 "Indexed {pkg_ver} from {ecosystem}: {chunks} chunks.\n\
-                 Use search_code with language={language} to query it."
+                 Use search_code with language={language} to query it.{gpu_warn}"
             )
         };
         Ok(CallToolResult::success(vec![Content::text(msg)]))
